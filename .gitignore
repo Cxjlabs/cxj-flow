@@ -1,0 +1,6 @@
+logs/
+workspaces/
+state.json
+.lock
+__pycache__/
+.env*
