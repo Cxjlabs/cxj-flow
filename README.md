@@ -50,6 +50,8 @@ Agents run with Claude Code's permission checks on. Text inside issues and web p
 
 Stop it any time with `./setup.sh --stop`.
 
+**Keep your company files private.** Put `WORKFLOW.md` and `context/` in a folder of your own, for example inside a private repo, and run `FLOW_HOME=~/that-folder ./setup.sh`. The code stays a clean clone of this repo. With `self_update: true` it pulls both this repo and your folder on every tick.
+
 ## How it works
 - `flow/runner.py` runs every 5 minutes. A small, cheap Claude call reads Linear and finds three things: tasks to build, tasks to ship and ideas to plan. It starts the right agent for each, in the background.
 - **Builders** each get their own git worktree on the task's Linear branch. They're retried with back-off if they stall, and give up after 3 tries.

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """CXJ Flow runner. One tick: reconcile running builders, start gate agents, dispatch new builds.
 
-Run every few minutes by launchd (see setup.sh). All config lives in ../WORKFLOW.md.
+Run every few minutes by launchd (see setup.sh). All config lives in WORKFLOW.md (in this repo, or in $FLOW_HOME).
 Linear is read through Claude Code's own Linear connection (no API key): a small `claude -p` call lists work.
 
   python3 flow/runner.py            # one tick
@@ -13,8 +13,7 @@ from pathlib import Path
 import yaml
 
 import agents
-
-FLOW = Path(__file__).resolve().parent.parent
+from agents import CODE, FLOW
 STATE = FLOW / "state.json"
 LOGS = FLOW / "logs"
 LIST = {"type": "array", "items": {"type": "string"}}
@@ -174,6 +173,7 @@ def dispatch(cfg, body, state, dry):
 
 def main():
     dry = "--dry-run" in sys.argv
+    FLOW.mkdir(parents=True, exist_ok=True)
     with open(FLOW / ".lock", "w") as lock:
         try:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -181,7 +181,8 @@ def main():
             return  # previous tick still running
         cfg, body = load_workflow()
         if cfg.get("self_update"):
-            subprocess.run(["git", "-C", FLOW, "pull", "-q", "--rebase", "--autostash"], capture_output=True, timeout=120)
+            for d in {CODE, FLOW}:  # the code, and your own files if they live in another repo
+                subprocess.run(["git", "-C", d, "pull", "-q", "--rebase", "--autostash"], capture_output=True, timeout=120)
             cfg, body = load_workflow()
         state = json.loads(STATE.read_text()) if STATE.exists() else {"running": {}, "retries": {}}
         reconcile(cfg, state)
