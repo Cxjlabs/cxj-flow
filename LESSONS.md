@@ -8,3 +8,4 @@ Newest at the bottom. Read this at session start.
   calls (state + label) in the dispatcher prompt.
 - The builder's finish marker can sit far from the end of a stream-json log; read the whole log, not the tail.
 - Hand-copying files onto the runner machine breaks `git pull` there (untracked files block it). Ship changes through git only.
+- Gate agent names (plan/ship) differ from the model keys in WORKFLOW.md (planner/shipper); a KeyError there crashed every tick silently. Gate starts are now wrapped so one bad agent can't stop the builders.

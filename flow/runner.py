@@ -135,8 +135,12 @@ def gates(cfg, found, state, dry):
             continue
         if dry:
             log(f"DRY RUN would start {name} agent for {', '.join(ids)}")
-        elif (pid := agents.spawn(cfg, name, ids, state, alive)):
-            log(f"{name} agent: started pid {pid} for {', '.join(ids)}")
+            continue
+        try:  # one broken gate agent must not stop the builders
+            if (pid := agents.spawn(cfg, name, ids, state, alive)):
+                log(f"{name} agent: started pid {pid} for {', '.join(ids)}")
+        except Exception as e:
+            log(f"{name} agent: failed to start: {e!r}")
 
 
 def dispatch(cfg, body, state, dry):
