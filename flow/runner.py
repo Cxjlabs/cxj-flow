@@ -16,14 +16,16 @@ import agents
 from agents import CODE, FLOW
 STATE = FLOW / "state.json"
 LOGS = FLOW / "logs"
-LIST = {"type": "array", "items": {"type": "string"}}
+LABELLED = {"type": "array", "items": {"type": "object", "properties": {
+    "identifier": {"type": "string"}, "labels": {"type": "array", "items": {"type": "string"}}},
+    "required": ["identifier", "labels"]}}
 DISPATCH_SCHEMA = {
     "type": "object",
     "properties": {"issues": {"type": "array", "items": {"type": "object", "properties": {
         "identifier": {"type": "string"}, "title": {"type": "string"}, "branch": {"type": "string"},
         "repo": {"type": "string"}}, "required": ["identifier", "title", "branch", "repo"]}},
-        "ship": LIST, "plan": LIST},
-    "required": ["issues", "ship", "plan"],
+        "ship": LABELLED, "plan": LABELLED, "projects": LABELLED},
+    "required": ["issues", "ship", "plan", "projects"],
 }
 
 
@@ -49,10 +51,18 @@ def claude_json(cfg, prompt, schema):
                           "--allowedTools", cfg["tools"]["linear"]],
                          capture_output=True, text=True, timeout=600, cwd=FLOW)
     res = json.loads(out.stdout)
-    if res.get("is_error") or res.get("permission_denials"):
-        raise RuntimeError(f"dispatcher failed: {res.get('permission_denials') or res.get('result')}")
+    # A refused non-Linear tool (a plugin nudging the model towards a sandbox, say) is the permission system working:
+    # the model carries on with Linear. Only a refused Linear tool means the answer can't be trusted.
+    denied = [d for d in res.get("permission_denials") or [] if d.get("tool_name", "").startswith(cfg["tools"]["linear"])]
+    if res.get("is_error") or denied:
+        raise RuntimeError(f"dispatcher failed: {denied or res.get('result')}")
     so = res.get("structured_output")
     return so if so is not None else json.loads(res["result"])
+
+
+def labelled(items, wanted):
+    """Identifiers whose own label list really holds one of `wanted`: the small model over-reports (`needs-plan` is not `plan`)."""
+    return [i["identifier"] for i in items if set(i["labels"]) & set(wanted)]
 
 
 def find_work(cfg, running_ids):
@@ -64,10 +74,17 @@ def find_work(cfg, running_ids):
         f"{[lb['idea'], lb['triage'], lb['decision']]}, any whose title starts with {t['excluded_title_prefixes']}, and any "
         f"blocked by an issue not in {t['terminal_states']}. For each: identifier, title, gitBranchName as branch, and repo = "
         f"the repo name from its project description's 'Repo: owner/name' line (just `name`, or 'none').\n"
-        f"2. `ship`: identifiers of issues in state {t['handoff_state']} with label `{lb['go']}`.\n"
-        f"3. `plan`: identifiers of open issues with label `{lb['plan']}` or `{lb['approved']}`.\n"
+        f"2. `ship`: issues in state {t['handoff_state']} with label `{lb['go']}`.\n"
+        f"3. `plan`: open issues with label `{lb['plan']}` or `{lb['approved']}` (one filtered call per label).\n"
+        f"4. `projects`: projects of this team with the project label `{lb['plan']}` or `{lb['approved']}` (list_projects, one "
+        f"filtered call per label, asking for the labels field). Use the project's name as its identifier.\n"
+        f"For 2, 3 and 4 give each one's identifier and labels = every label name on it, exactly as Linear returns them.\n"
         f"Read only: change nothing. Return JSON only.")
     res = claude_json(cfg, prompt, DISPATCH_SCHEMA)
+    res["ship"] = labelled(res["ship"], [lb["go"]])
+    res["plan"] = labelled(res["plan"], [lb["plan"], lb["approved"]])
+    # a project is planned by the same agent; `project "Name"` tells it which kind it has been handed
+    res["plan"] += [f'project "{n}"' for n in labelled(res["projects"], [lb["plan"], lb["approved"]])]
     res["issues"] = [i for i in res["issues"] if i["identifier"] not in running_ids]
     return res
 
@@ -176,6 +193,11 @@ def dispatch(cfg, body, state, dry):
 
 
 def main():
+    if "--self-check" in sys.argv:
+        got = labelled([{"identifier": "A", "labels": ["needs-plan"]}, {"identifier": "B", "labels": ["Bug", "plan"]},
+                        {"identifier": "C", "labels": []}], ["plan", "approved"])
+        assert got == ["B"], got
+        return print("ok")
     dry = "--dry-run" in sys.argv
     FLOW.mkdir(parents=True, exist_ok=True)
     with open(FLOW / ".lock", "w") as lock:

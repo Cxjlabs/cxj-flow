@@ -9,3 +9,8 @@ Newest at the bottom. Read this at session start.
 - The builder's finish marker can sit far from the end of a stream-json log; read the whole log, not the tail.
 - Hand-copying files onto the runner machine breaks `git pull` there (untracked files block it). Ship changes through git only.
 - Gate agent names (plan/ship) differ from the model keys in WORKFLOW.md (planner/shipper); a KeyError there crashed every tick silently. Gate starts are now wrapped so one bad agent can't stop the builders.
+- An installed Claude Code plugin can nudge headless runs towards tools they aren't allowed (a "process output in a sandbox"
+  hint). The dispatcher was refused, carried on, and the tick still crashed because any refusal counted as failure. Only a
+  refused Linear tool fails the tick now.
+- The small dispatcher model over-reports labels (it listed issues with no `plan` label, and `needs-plan` is not `plan`). It
+  returns each item's labels and the runner filters on exact membership (`labelled`, checked by `runner.py --self-check`).

@@ -32,6 +32,7 @@ LINEAR=$(cfg "['tools']['linear']"); TODOIST=$(cfg "['tools']['todoist']")
 LABELS=$(cfg "['labels']"); DONE=$(cfg "['todoist']['done_label']")
 TOOLS=("$LINEAR"); [ -n "$TODOIST" ] && TOOLS+=("$TODOIST")
 claude -p "Using the Linear tools: in team $TEAM, create any of these issue labels that don't exist yet (leave existing ones alone): $LABELS.
+Also create the PROJECT labels for plan and approved from that list if they don't exist (same names), so a whole project can be planned.
 $( [ -n "$TODOIST" ] && echo "Using the Todoist tools: create the personal label '$DONE' if it doesn't exist.")
 Reply with one line: what you created." --model sonnet --permission-mode dontAsk --allowedTools "${TOOLS[@]}"
 echo "3/5 labels ready"

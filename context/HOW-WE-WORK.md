@@ -11,6 +11,8 @@ Working rules for CXJ Flow agents. The defaults below are sensible; edit anythin
 - One task = one pull request, small enough to review in 10 minutes.
 - Every task has a "Done when" with checks someone can observe.
 - Ideas are never built until the owner adds the `plan` label, and plans never until `approved`.
+- Anything bigger than one change is a Linear project: the plan lives in the project description and its tasks are plain
+  issues under it. `plan` and `approved` go on the project. Sub-issues are only for one small idea planned on a single issue.
 
 ## Code
 - Smallest change that works. Match the existing style. No new dependencies without saying why.

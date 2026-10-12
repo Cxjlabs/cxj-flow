@@ -8,8 +8,8 @@ CXJ Flow runs on your own Mac (or Linux box) using the Claude Code you already h
 flowchart TD
   T[Todoist Inbox] -->|hourly| S{Sorter}
   S -->|action| A[Stays in Todoist for you]
-  S -->|idea / build request| L[Linear Backlog]
-  L -->|you add: plan| P[Planner writes plan + sub-tasks]
+  S -->|idea / build request| L[Linear Backlog: an issue, or a project when it's big]
+  L -->|you add: plan| P[Planner writes the plan + tasks]
   P -->|you add: approved| B[Builder: branch + PR]
   B --> R[In Review]
   B -.->|blocked| Q[One question for you]
@@ -21,8 +21,9 @@ flowchart TD
 
 | You add this label in Linear | What happens (within 5 minutes) |
 |---|---|
-| `plan` on an idea | The planner checks it isn't already built, weighs it, and writes a plan with 1–6 small sub-tasks. Nothing gets built yet. |
-| `approved` on the planned issue | Its sub-tasks are queued. The builder does each one on its own branch, runs the checks and opens a PR. |
+| `plan` on a **project** | The planner checks it isn't already built, then writes the plan into the project itself (Goal, Done when, Repo, steps; long material as a project document) and creates up to 8 plain issues under it. No sub-issues, so the project board and progress bar show everything. Nothing gets built yet. |
+| `plan` on a single idea (an issue) | Same, for something small: a plan comment and 1–6 sub-tasks on that issue. |
+| `approved` on the planned project or issue | Its tasks are queued. The builder does each one on its own branch, runs the checks and opens a PR. |
 | `go` on a task in review | The shipper checks the PR, merges it and closes the task. |
 
 Every morning a Todoist task, **"Flow — Mon 12 Oct: 3 need your yes"**, lists what's waiting on you under four headings: *Plan it? · Approve plan? · Go? · Stuck?*

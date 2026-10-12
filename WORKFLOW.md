@@ -10,8 +10,8 @@ tracker:
   excluded_title_prefixes: ["You:"]   # tasks only a person can do
 labels:                            # Linear labels CXJ Flow uses (setup creates them)
   build: agent                     # approved for an agent to build
-  plan: plan                       # you: "plan it"
-  approved: approved               # you: "build the plan"
+  plan: plan                       # you: "plan it" (on a project, or on a single issue)
+  approved: approved               # you: "build the plan" (same place you put plan)
   go: go                           # you: "ship it"
   idea: Idea                       # parked idea (never built itself)
   triage: Triage                   # build request waiting for "plan it"
