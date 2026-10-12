@@ -15,6 +15,7 @@ import yaml
 import agents
 from agents import CODE, FLOW
 STATE = FLOW / "state.json"
+DRY = False
 LOGS = FLOW / "logs"
 LABELLED = {"type": "array", "items": {"type": "object", "properties": {
     "identifier": {"type": "string"}, "labels": {"type": "array", "items": {"type": "string"}}},
@@ -23,7 +24,9 @@ DISPATCH_SCHEMA = {
     "type": "object",
     "properties": {"issues": {"type": "array", "items": {"type": "object", "properties": {
         "identifier": {"type": "string"}, "title": {"type": "string"}, "branch": {"type": "string"},
-        "repo": {"type": "string"}}, "required": ["identifier", "title", "branch", "repo"]}},
+        "repo": {"type": "string"}, "blocked_by": {"type": "array", "items": {"type": "object", "properties": {
+            "identifier": {"type": "string"}, "status": {"type": "string"}}, "required": ["identifier", "status"]}}},
+        "required": ["identifier", "title", "branch", "repo", "blocked_by"]}},
         "ship": LABELLED, "plan": LABELLED, "projects": LABELLED},
     "required": ["issues", "ship", "plan", "projects"],
 }
@@ -65,6 +68,22 @@ def labelled(items, wanted):
     return [i["identifier"] for i in items if set(i["labels"]) & set(wanted)]
 
 
+def blocked(issue, terminal):
+    """Blockers that aren't finished yet. Checked here because the small model lets blocked issues through."""
+    return [b["identifier"] for b in issue.get("blocked_by") or [] if b["status"] not in terminal]
+
+
+def notify(msg):
+    """Ping the owner: runs $FLOW_HOME/notify.sh "<message>" if you made one (ntfy, Slack, anything). Never raises."""
+    hook = FLOW / "notify.sh"
+    if DRY or not hook.exists():
+        return
+    try:
+        subprocess.run([str(hook), msg], capture_output=True, timeout=30)
+    except Exception as e:
+        log(f"notify failed: {e!r}")
+
+
 def find_work(cfg, running_ids):
     t, lb = cfg["tracker"], cfg["labels"]
     prompt = (
@@ -73,7 +92,8 @@ def find_work(cfg, running_ids):
         f"1. `issues`: issues in state {t['active_states']} with label `{lb['build']}`, excluding any with labels "
         f"{[lb['idea'], lb['triage'], lb['decision']]}, any whose title starts with {t['excluded_title_prefixes']}, and any "
         f"blocked by an issue not in {t['terminal_states']}. For each: identifier, title, gitBranchName as branch, and repo = "
-        f"the repo name from its project description's 'Repo: owner/name' line (just `name`, or 'none').\n"
+        f"the repo name from its project description's 'Repo: owner/name' line (just `name`, or 'none'), and blocked_by = "
+        f"every issue it is blocked by (get_issue with relations) as identifier + current status name, [] if none.\n"
         f"2. `ship`: issues in state {t['handoff_state']} with label `{lb['go']}`.\n"
         f"3. `plan`: open issues with label `{lb['plan']}` or `{lb['approved']}` (one filtered call per label).\n"
         f"4. `projects`: projects of this team with the project label `{lb['plan']}` or `{lb['approved']}` (list_projects, one "
@@ -109,12 +129,16 @@ def reconcile(cfg, state):
             os.killpg(r["pid"], signal.SIGTERM)
         del state["running"][ident]
         text = logf.read_text() if logf.exists() else ""
+        what = f"{ident} {r.get('title', '')}".strip()
         if "[Flow] ready for review" in text or "[Flow] blocked" in text:
             log(f"{ident}: finished (attempt {r['attempt']})")
             state["retries"].pop(ident, None)
+            notify(f"Ready for review: {what}. Add the `{cfg['labels']['go']}` label to ship it." if "[Flow] ready for review" in text
+                   else f"Blocked, has a question for you: {what}")
         elif r["attempt"] >= a["max_retries"]:
             log(f"{ident}: gave up after {r['attempt']} attempts — needs a person")
             state["retries"][ident] = {"attempt": r["attempt"], "due": float("inf")}
+            notify(f"Gave up after {r['attempt']} attempts, needs you: {what}")
         else:
             backoff = a["retry_backoff_seconds"][min(r["attempt"] - 1, len(a["retry_backoff_seconds"]) - 1)]
             state["retries"][ident] = {"attempt": r["attempt"], "due": time.time() + backoff}
@@ -160,6 +184,17 @@ def gates(cfg, found, state, dry):
             log(f"{name} agent: failed to start: {e!r}")
 
 
+def gate_results(state):
+    """When a plan or ship agent has finished, pass its reply on (one plain line per item). Triage stays quiet."""
+    for name, job in state.get("jobs", {}).items():
+        if name == "triage" or job.get("told") is not False or alive(job["pid"]):
+            continue
+        job["told"] = True
+        text = Path(job["log"]).read_text().strip() if Path(job["log"]).exists() else ""
+        if text:
+            notify(f"{name.capitalize()} agent: {text[-400:]}")
+
+
 def dispatch(cfg, body, state, dry):
     a = cfg["agent"]
     found = find_work(cfg, set(state["running"]))
@@ -171,6 +206,9 @@ def dispatch(cfg, body, state, dry):
         ident = issue["identifier"]
         retry = state["retries"].get(ident)
         if retry and retry["due"] > time.time():
+            continue
+        if (waiting := blocked(issue, cfg["tracker"]["terminal_states"])):
+            log(f"{ident}: skipped (blocked by {', '.join(waiting)})")
             continue
         repos = cfg.get("repos") or {}
         if issue["repo"] not in repos or issue["repo"] in cfg.get("skip_repos", []):
@@ -187,7 +225,8 @@ def dispatch(cfg, body, state, dry):
             p = subprocess.Popen(["claude", "-p", render(body, cfg, issue, ws, attempt), "--model", cfg["models"]["builder"],
                                   "--permission-mode", "auto", "--output-format", "stream-json", "--verbose"],
                                  cwd=ws, stdout=out, stderr=subprocess.STDOUT, start_new_session=True)
-        state["running"][ident] = {"pid": p.pid, "log": str(logf), "attempt": attempt, "started": time.time()}
+        state["running"][ident] = {"pid": p.pid, "log": str(logf), "attempt": attempt, "started": time.time(),
+                                   "title": issue["title"]}
         log(f"{ident}: started pid {p.pid} attempt {attempt} in {ws}")
         slots -= 1
 
@@ -197,8 +236,12 @@ def main():
         got = labelled([{"identifier": "A", "labels": ["needs-plan"]}, {"identifier": "B", "labels": ["Bug", "plan"]},
                         {"identifier": "C", "labels": []}], ["plan", "approved"])
         assert got == ["B"], got
+        waits = blocked({"blocked_by": [{"identifier": "X", "status": "Done"}, {"identifier": "Y", "status": "Todo"}]}, ["Done", "Canceled"])
+        assert waits == ["Y"], waits
+        assert blocked({}, ["Done"]) == []
         return print("ok")
-    dry = "--dry-run" in sys.argv
+    global DRY
+    dry = DRY = "--dry-run" in sys.argv
     FLOW.mkdir(parents=True, exist_ok=True)
     with open(FLOW / ".lock", "w") as lock:
         try:
@@ -212,6 +255,7 @@ def main():
             cfg, body = load_workflow()
         state = json.loads(STATE.read_text()) if STATE.exists() else {"running": {}, "retries": {}}
         reconcile(cfg, state)
+        gate_results(state)
         dispatch(cfg, body, state, dry)
         if not dry:
             STATE.write_text(json.dumps(state, indent=1))

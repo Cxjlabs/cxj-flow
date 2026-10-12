@@ -116,5 +116,5 @@ def spawn(cfg, name, ids, state, alive):
         p = subprocess.Popen(["claude", "-p", prompts(cfg)[name].replace("{ids}", ", ".join(ids)),
                               "--model", cfg["models"][{"plan": "planner", "ship": "shipper"}.get(name, name)], "--permission-mode", "dontAsk", "--allowedTools", *tools(cfg, name)],
                              cwd=FLOW, stdout=out, stderr=subprocess.STDOUT, start_new_session=True)
-    state["jobs"][name] = {"pid": p.pid, "log": str(logf), "started": time.time()}
+    state["jobs"][name] = {"pid": p.pid, "log": str(logf), "started": time.time(), "told": False}
     return p.pid

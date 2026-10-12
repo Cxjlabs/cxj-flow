@@ -14,3 +14,6 @@ Newest at the bottom. Read this at session start.
   refused Linear tool fails the tick now.
 - The small dispatcher model over-reports labels (it listed issues with no `plan` label, and `needs-plan` is not `plan`). It
   returns each item's labels and the runner filters on exact membership (`labelled`, checked by `runner.py --self-check`).
+- The dispatcher is told to leave out blocked issues, but the small model still let one through and the builder was
+  started on a task whose blockers were Todo. It now returns each issue's blockers with their status and the runner skips
+  any with an unfinished blocker (`blocked`, checked by `runner.py --self-check`).

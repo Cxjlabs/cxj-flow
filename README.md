@@ -28,6 +28,8 @@ flowchart TD
 
 Every morning a Todoist task, **"Flow — Mon 12 Oct: 3 need your yes"**, lists what's waiting on you under four headings: *Plan it? · Approve plan? · Go? · Stuck?*
 
+**Want a ping the moment something needs you?** Put an executable `notify.sh` in your Flow folder. CXJ Flow runs it with one argument, the message, when a build is ready for review, a build is blocked with a question, or the planner or shipper finishes. Send it wherever you like (ntfy, Slack, a desktop alert). Keep the file out of git if it holds a private address.
+
 ## What it never does
 - Merge or ship without your `go`, or build anything you didn't approve
 - Deploy, push to `main`, or touch production data (it writes migration files for you to apply)
