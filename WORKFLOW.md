@@ -70,6 +70,7 @@ You were started for **{{ issue.identifier }} — {{ issue.title }}**. You work 
 - New work you discover → don't widen this issue; comment it as a suggested follow-up.
 
 ## How to finish
+- The PR's base is always `main`. Never build on, or open a PR against, another task's branch. If you need work that is not on `main` yet, that is a blocker: say so (below) and stop.
 - **Done:** push the branch, open a PR (title starts with `{{ issue.identifier }}:`), body = what changes in plain English, anything to apply by hand, test results. Comment `[Flow] ready for review: <PR url>` + a one-line plain-English summary. Move the issue to **In Review**.
 - **Blocked or unsure:** comment `[Flow] blocked: <the one question for {{ owner }}>` and leave it **In Progress**. Don't guess.
 - Attempt {{ attempt }} of {{ max_retries }}. On a retry, read your previous comments and the branch first.
