@@ -17,3 +17,8 @@ Newest at the bottom. Read this at session start.
 - The dispatcher is told to leave out blocked issues, but the small model still let one through and the builder was
   started on a task whose blockers were Todo. It now returns each issue's blockers with their status and the runner skips
   any with an unfinished blocker (`blocked`, checked by `runner.py --self-check`).
+- The dispatcher also over-reports build candidates: builders were started on tasks already In Review or Done. It now
+  returns each candidate's status and labels and the runner keeps only active state + build label (`buildable`, checked
+  by `runner.py --self-check`).
+- `gh pr merge --delete-branch` closes every open PR whose base is the deleted branch. The shipper now re-points those at
+  the merged PR's base first, and the builder is told to always open PRs against `main`, never another task's branch.

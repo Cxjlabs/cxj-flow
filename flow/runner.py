@@ -24,9 +24,10 @@ DISPATCH_SCHEMA = {
     "type": "object",
     "properties": {"issues": {"type": "array", "items": {"type": "object", "properties": {
         "identifier": {"type": "string"}, "title": {"type": "string"}, "branch": {"type": "string"},
+        "status": {"type": "string"}, "labels": {"type": "array", "items": {"type": "string"}},
         "repo": {"type": "string"}, "blocked_by": {"type": "array", "items": {"type": "object", "properties": {
             "identifier": {"type": "string"}, "status": {"type": "string"}}, "required": ["identifier", "status"]}}},
-        "required": ["identifier", "title", "branch", "repo", "blocked_by"]}},
+        "required": ["identifier", "title", "branch", "status", "labels", "repo", "blocked_by"]}},
         "ship": LABELLED, "plan": LABELLED, "projects": LABELLED},
     "required": ["issues", "ship", "plan", "projects"],
 }
@@ -68,6 +69,12 @@ def labelled(items, wanted):
     return [i["identifier"] for i in items if set(i["labels"]) & set(wanted)]
 
 
+def buildable(items, states, label):
+    """Issues really in an active state with the build label: the small model over-reports here too (it has sent Done ones)."""
+    # ponytail: trusts the status/labels the model copies from Linear; read them over the Linear API if it ever invents those
+    return [i for i in items if i["status"] in states and label in i["labels"]]
+
+
 def blocked(issue, terminal):
     """Blockers that aren't finished yet. Checked here because the small model lets blocked issues through."""
     return [b["identifier"] for b in issue.get("blocked_by") or [] if b["status"] not in terminal]
@@ -91,7 +98,8 @@ def find_work(cfg, running_ids):
         f"and no other tools:\n"
         f"1. `issues`: issues in state {t['active_states']} with label `{lb['build']}`, excluding any with labels "
         f"{[lb['idea'], lb['triage'], lb['decision']]}, any whose title starts with {t['excluded_title_prefixes']}, and any "
-        f"blocked by an issue not in {t['terminal_states']}. For each: identifier, title, gitBranchName as branch, and repo = "
+        f"blocked by an issue not in {t['terminal_states']}. For each: identifier, title, gitBranchName as branch, status = its current "
+        f"state name and labels = every label name on it, exactly as Linear returns them, and repo = "
         f"the repo name from its project description's 'Repo: owner/name' line (just `name`, or 'none'), and blocked_by = "
         f"every issue it is blocked by (get_issue with relations) as identifier + current status name, [] if none.\n"
         f"2. `ship`: issues in state {t['handoff_state']} with label `{lb['go']}`.\n"
@@ -105,7 +113,11 @@ def find_work(cfg, running_ids):
     res["plan"] = labelled(res["plan"], [lb["plan"], lb["approved"]])
     # a project is planned by the same agent; `project "Name"` tells it which kind it has been handed
     res["plan"] += [f'project "{n}"' for n in labelled(res["projects"], [lb["plan"], lb["approved"]])]
-    res["issues"] = [i for i in res["issues"] if i["identifier"] not in running_ids]
+    ok = buildable(res["issues"], t["active_states"], lb["build"])
+    for i in res["issues"]:
+        if i not in ok:
+            log(f"{i['identifier']}: skipped (state '{i['status']}', labels {i['labels']}: not {t['active_states']} + `{lb['build']}`)")
+    res["issues"] = [i for i in ok if i["identifier"] not in running_ids]
     return res
 
 
@@ -239,6 +251,10 @@ def main():
         waits = blocked({"blocked_by": [{"identifier": "X", "status": "Done"}, {"identifier": "Y", "status": "Todo"}]}, ["Done", "Canceled"])
         assert waits == ["Y"], waits
         assert blocked({}, ["Done"]) == []
+        todo = {"identifier": "T", "status": "Todo", "labels": ["agent"]}
+        got = buildable([todo, {"identifier": "D", "status": "Done", "labels": ["agent"]},
+                         {"identifier": "N", "status": "Todo", "labels": ["Bug"]}], ["Todo"], "agent")
+        assert got == [todo], got
         return print("ok")
     global DRY
     dry = DRY = "--dry-run" in sys.argv

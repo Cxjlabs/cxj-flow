@@ -27,10 +27,13 @@ For each one:
 2. Find its pull request (the `[Flow] ready for review: <url>` comment, an attachment, or the PR whose title starts with the identifier).
    No PR at all (work done outside git): comment "[Ship] closed — nothing to merge", remove `{lb['go']}`, move to Done, stop.
 3. If the PR's repo is one of: {skip} — do NOT merge: comment "[Ship] this repo ships by hand", remove `{lb['go']}`, stop.
-4. `gh pr view <url> --json state,mergeable,mergeStateStatus` and `gh pr checks <url>`. Already merged: go to step 6.
+4. `gh pr view <url> --json state,mergeable,mergeStateStatus,headRefName,baseRefName` and `gh pr checks <url>`. Already merged: go to step 7.
    Not mergeable or a check failed: comment "[Ship] can't merge: <reason in one line>", remove `{lb['go']}`, leave it.
-5. `gh pr merge <url> --squash --delete-branch`.
-6. Comment "[Ship] merged <url> — <one line: what is now live, for whom>", remove `{lb['go']}`, move the issue to Done.
+5. Other open PRs built on top of this one's branch would be closed when that branch is deleted. Find them with
+   `gh pr list --repo <owner/name> --base <this PR's head branch> --state open --json number` and, for each, run
+   `gh pr edit <number> --repo <owner/name> --base <this PR's base branch>` before merging.
+6. `gh pr merge <url> --squash --delete-branch`.
+7. Comment "[Ship] merged <url> — <one line: what is now live, for whom>", remove `{lb['go']}`, move the issue to Done.
 Never merge anything not listed above. {RULES}
 Reply with one line per issue: identifier + merged / skipped / can't merge.""",
 
@@ -99,7 +102,8 @@ Reply with one line per task: title → action / idea <id> / build <id> / alread
 
 def tools(cfg, name):
     linear, todoist = cfg["tools"]["linear"], cfg["tools"].get("todoist")
-    return {"ship": [linear, "Bash(gh pr view:*)", "Bash(gh pr checks:*)", "Bash(gh pr merge:*)"],
+    return {"ship": [linear, "Bash(gh pr view:*)", "Bash(gh pr checks:*)", "Bash(gh pr list:*)", "Bash(gh pr edit:*)",
+                     "Bash(gh pr merge:*)"],
             "plan": [linear, "Read", "Grep", "Glob"],
             "triage": [linear, todoist]}[name]
 
