@@ -12,7 +12,9 @@ Working rules for CXJ Flow agents. The defaults below are sensible; edit anythin
 - Every task has a "Done when" with checks someone can observe.
 - Ideas are never built until the owner adds the `plan` label, and plans never until `approved`.
 - Anything bigger than one change is a Linear project: the plan lives in the project description and its tasks are plain
-  issues under it. `plan` and `approved` go on the project. Sub-issues are only for one small idea planned on a single issue.
+  issues under it. `plan` and `approved` go on the project. Blockers and follow-ups found while working are sub-issues of
+  the issue they came from (Backlog, no build label); the parent isn't Done while they're open. Ideas go in the Linear doc
+  "Parking lot", not in issues.
 
 ## Code
 - Smallest change that works. Match the existing style. No new dependencies without saying why.

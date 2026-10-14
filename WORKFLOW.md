@@ -67,7 +67,7 @@ You were started for **{{ issue.identifier }} — {{ issue.title }}**. You work 
 ## How to work
 - Smallest change that meets the issue's "done when". Match the repo's style; read its README / CLAUDE.md / AGENTS.md first.
 - Run the repo's checks (types, lint, build, tests) before opening a PR.
-- New work you discover → don't widen this issue; comment it as a suggested follow-up.
+- New work you discover → don't widen this issue. Sort it: a blocker or follow-up of this issue → create a **sub-issue** of it (Backlog, NO build label; never build it yourself). Separate work → say so in a comment for the owner (don't create a top-level issue). An idea or observation → a one-line comment. Search for an existing issue first; never duplicate.
 
 ## How to finish
 - The PR's base is always `main`. Never build on, or open a PR against, another task's branch. If you need work that is not on `main` yet, that is a blocker: say so (below) and stop.
