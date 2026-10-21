@@ -20,6 +20,9 @@ LOGS = FLOW / "logs"
 LABELLED = {"type": "array", "items": {"type": "object", "properties": {
     "identifier": {"type": "string"}, "labels": {"type": "array", "items": {"type": "string"}}},
     "required": ["identifier", "labels"]}}
+SHIP = {"type": "array", "items": {"type": "object", "properties": {
+    "identifier": {"type": "string"}, "status": {"type": "string"}, "labels": {"type": "array", "items": {"type": "string"}}},
+    "required": ["identifier", "status", "labels"]}}
 DISPATCH_SCHEMA = {
     "type": "object",
     "properties": {"issues": {"type": "array", "items": {"type": "object", "properties": {
@@ -28,7 +31,7 @@ DISPATCH_SCHEMA = {
         "repo": {"type": "string"}, "blocked_by": {"type": "array", "items": {"type": "object", "properties": {
             "identifier": {"type": "string"}, "status": {"type": "string"}}, "required": ["identifier", "status"]}}},
         "required": ["identifier", "title", "branch", "status", "labels", "repo", "blocked_by"]}},
-        "ship": LABELLED, "plan": LABELLED, "projects": LABELLED},
+        "ship": SHIP, "plan": LABELLED, "projects": LABELLED},
     "required": ["issues", "ship", "plan", "projects"],
 }
 
@@ -102,14 +105,15 @@ def find_work(cfg, running_ids):
         f"state name and labels = every label name on it, exactly as Linear returns them, and repo = "
         f"the repo name from its project description's 'Repo: owner/name' line (just `name`, or 'none'), and blocked_by = "
         f"every issue it is blocked by (get_issue with relations) as identifier + current status name, [] if none.\n"
-        f"2. `ship`: issues in state {t['handoff_state']} with label `{lb['go']}`.\n"
+        f"2. `ship`: issues in state {t['handoff_state']} with label `{lb['go']}`, each with status = its current state name.\n"
         f"3. `plan`: open issues with label `{lb['plan']}` or `{lb['approved']}` (one filtered call per label).\n"
         f"4. `projects`: projects of this team with the project label `{lb['plan']}` or `{lb['approved']}` (list_projects, one "
         f"filtered call per label, asking for the labels field). Use the project's name as its identifier.\n"
         f"For 2, 3 and 4 give each one's identifier and labels = every label name on it, exactly as Linear returns them.\n"
         f"Read only: change nothing. Return JSON only.")
     res = claude_json(cfg, prompt, DISPATCH_SCHEMA)
-    res["ship"] = labelled(res["ship"], [lb["go"]])
+    # state checked here too: the small model kept sending a Done and a Canceled issue, so the shipper ran ~hourly and pinged each time
+    res["ship"] = [i["identifier"] for i in buildable(res["ship"], [t["handoff_state"]], lb["go"])]
     res["plan"] = labelled(res["plan"], [lb["plan"], lb["approved"]])
     # a project is planned by the same agent; `project "Name"` tells it which kind it has been handed
     res["plan"] += [f'project "{n}"' for n in labelled(res["projects"], [lb["plan"], lb["approved"]])]
@@ -270,11 +274,13 @@ def main():
                 subprocess.run(["git", "-C", d, "pull", "-q", "--rebase", "--autostash"], capture_output=True, timeout=120)
             cfg, body = load_workflow()
         state = json.loads(STATE.read_text()) if STATE.exists() else {"running": {}, "retries": {}}
-        reconcile(cfg, state)
-        gate_results(state)
-        dispatch(cfg, body, state, dry)
-        if not dry:
-            STATE.write_text(json.dumps(state, indent=1))
+        try:  # save even when the dispatcher fails, or reconcile/gate_results ping the same thing again next tick
+            reconcile(cfg, state)
+            gate_results(state)
+            dispatch(cfg, body, state, dry)
+        finally:
+            if not dry:
+                STATE.write_text(json.dumps(state, indent=1))
 
 
 if __name__ == "__main__":
