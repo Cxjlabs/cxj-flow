@@ -164,6 +164,7 @@ def clash():
         body = writes[0][-3][5:]
         assert body.startswith(runner.MARK) and "database" in body and "web-app#37" in body and "SQL dry run" in body, body
         assert "**Checks:** none configured" in body, body
+        assert "Closer page" not in body, body  # another repo's PR title is never copied into this one
         assert len(pings) == 2, pings  # both PRs touch the database: one clash ping each, once
         runner.clash_check(cfg, st, False, gh)
         assert len(writes) == 2 and len(pings) == 2, writes  # nothing changed: no GitHub write, no ping

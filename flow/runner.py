@@ -336,7 +336,8 @@ def clash_body(cfg, state, p, prs, run):
         files = sorted(set(o["paths"]) & set(p["paths"])) if o["repo"] == p["repo"] else []
         if shared or files:
             why = shared + ([f"same files: {', '.join(files[:3])}"] if files else [])
-            others.append(f"{short(o)} \"{o['title'][:60]}\" ({'; '.join(why)})")
+            title = f" \"{o['title'][:60]}\"" if o["repo"] == p["repo"] else ""  # another repo's title may be private
+            others.append(f"{short(o)}{title} ({'; '.join(why)})")
         if shared:
             live.append(o["url"])
     sql = dry_runs(cfg, state, p, run)
