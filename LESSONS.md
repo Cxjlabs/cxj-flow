@@ -22,3 +22,9 @@ Newest at the bottom. Read this at session start.
   by `runner.py --self-check`).
 - `gh pr merge --delete-branch` closes every open PR whose base is the deleted branch. The shipper now re-points those at
   the merged PR's base first, and the builder is told to always open PRs against `main`, never another task's branch.
+- The haiku dispatcher's lessons above are history: since W2 (Oct 2026) `flow/linear.py` reads Linear over the API, exactly.
+  The live side-by-side before deleting it found one more miss: its `plan` list held only Todo issues and dropped open
+  Backlog and In Progress issues labelled `plan`/`approved` (10 of 14 on the real board). A filter written in prose is a
+  guess; a GraphQL filter is a fact. Golden fixture: `flow/fixtures/linear-work*.json`, checked by `--self-check`.
+- One exception used to end a whole tick (155 ticks lost to one KeyError before 15 Oct). Every per-item step now runs in
+  `isolated(...)`, and the daily view lists what was skipped, so a skip is never silent.

@@ -1,0 +1,29 @@
+{
+ "_note": "A Linear GraphQL response to linear.WORK, in the shape recorded live on 24 Oct 2026, names scrubbed. Each node is a case the old dispatcher got wrong or that needs an exact rule.",
+ "issues": {"pageInfo": {"hasNextPage": false}, "nodes": [
+  {"identifier": "CXJ-1", "title": "Plain buildable task", "branchName": "cxj-1-plain", "state": {"name": "Todo"},
+   "labels": {"nodes": [{"name": "agent"}]}, "project": {"description": "**Goal:** x\n\n**Repo:** Cxjlabs/cxj-flow\n"},
+   "inverseRelations": {"nodes": [{"type": "related", "issue": {"identifier": "CXJ-9", "state": {"name": "Todo"}}}]}},
+  {"identifier": "CXJ-2", "title": "Blocked by a Todo and a Done one", "branchName": "cxj-2", "state": {"name": "Todo"},
+   "labels": {"nodes": [{"name": "agent"}, {"name": "Bug"}]}, "project": {"description": "Repo: acme/app"},
+   "inverseRelations": {"nodes": [{"type": "blocks", "issue": {"identifier": "CXJ-3", "state": {"name": "Todo"}}},
+                                  {"type": "blocks", "issue": {"identifier": "CXJ-4", "state": {"name": "Done"}}}]}},
+  {"identifier": "CXJ-5", "title": "A parked idea", "branchName": "cxj-5", "state": {"name": "Todo"},
+   "labels": {"nodes": [{"name": "agent"}, {"name": "Idea"}]}, "project": null, "inverseRelations": {"nodes": []}},
+  {"identifier": "CXJ-6", "title": "You: accept the trust prompt", "branchName": "cxj-6", "state": {"name": "Todo"},
+   "labels": {"nodes": [{"name": "agent"}]}, "project": null, "inverseRelations": {"nodes": []}},
+  {"identifier": "CXJ-7", "title": "No project, so no repo", "branchName": "cxj-7", "state": {"name": "Todo"},
+   "labels": {"nodes": [{"name": "agent"}]}, "project": null, "inverseRelations": {"nodes": []}},
+  {"identifier": "CXJ-8", "title": "Project says Repo: none", "branchName": "cxj-8", "state": {"name": "Todo"},
+   "labels": {"nodes": [{"name": "agent"}]}, "project": {"description": "**Repo:** none"}, "inverseRelations": {"nodes": []}},
+  {"identifier": "CXJ-10", "title": "Repo as a markdown link", "branchName": "cxj-10", "state": {"name": "Todo"},
+   "labels": {"nodes": [{"name": "agent"}]}, "project": {"description": "**Repo:** [acme/agents](https://github.com/x)"},
+   "inverseRelations": {"nodes": []}}]},
+ "ship": {"pageInfo": {"hasNextPage": false}, "nodes": [
+  {"identifier": "CXJ-20", "state": {"name": "In Review"}, "labels": {"nodes": [{"name": "go"}]}}]},
+ "plan": {"pageInfo": {"hasNextPage": false}, "nodes": [
+  {"identifier": "CXJ-30", "labels": {"nodes": [{"name": "plan"}]}},
+  {"identifier": "CXJ-31", "labels": {"nodes": [{"name": "approved"}, {"name": "Laptop"}]}}]},
+ "projects": {"pageInfo": {"hasNextPage": false}, "nodes": [
+  {"name": "Some project", "labels": {"nodes": [{"name": "plan"}]}}]}
+}

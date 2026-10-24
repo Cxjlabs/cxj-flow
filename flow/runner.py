@@ -1,39 +1,29 @@
 #!/usr/bin/env python3
-"""CXJ Flow runner. One tick: reconcile running builders, apply SQL from merged PRs, start gate agents, dispatch builds.
+"""CXJ Flow runner. One tick, in this order:
 
-Run every few minutes by launchd (see setup.sh). All config lives in WORKFLOW.md (in this repo, or in $FLOW_HOME).
-Linear is read through Claude Code's own Linear connection (no API key): a small `claude -p` call lists work.
+  reconcile builders ─► apply SQL from merged PRs ─► read Linear (linear.py) ─► code shipper (`go`)
+      ─► gate agents (plan, sorter) ─► start builders ─► clash check on every open PR ─► daily prune ─► heartbeat
 
-  python3 flow/runner.py            # one tick
-  python3 flow/runner.py --dry-run  # say what it would start, start nothing
+Every per-item step is isolated: an error is logged, kept for the daily view, and that item is skipped.
+An idle tick makes no model call. Run every few minutes by launchd (see setup.sh). All config lives in WORKFLOW.md
+(in this repo, or in $FLOW_HOME). Linear is read and written over its API (flow/linear.py), GitHub through gh.
+
+  python3 flow/runner.py              # one tick
+  python3 flow/runner.py --dry-run    # say what it would do, change nothing
+  python3 flow/runner.py --self-check # the tests (flow/selfcheck.py)
 """
-import fcntl, json, os, re, signal, subprocess, sys, time
+import calendar, contextlib, fcntl, fnmatch, hashlib, json, os, re, signal, subprocess, sys, time, urllib.parse, urllib.request
 from pathlib import Path
 
 import yaml
 
-import agents
+import agents, linear
 from agents import CODE, FLOW
 STATE = FLOW / "state.json"
 DRY = False
 LOGS = FLOW / "logs"
-LABELLED = {"type": "array", "items": {"type": "object", "properties": {
-    "identifier": {"type": "string"}, "labels": {"type": "array", "items": {"type": "string"}}},
-    "required": ["identifier", "labels"]}}
-SHIP = {"type": "array", "items": {"type": "object", "properties": {
-    "identifier": {"type": "string"}, "status": {"type": "string"}, "labels": {"type": "array", "items": {"type": "string"}}},
-    "required": ["identifier", "status", "labels"]}}
-DISPATCH_SCHEMA = {
-    "type": "object",
-    "properties": {"issues": {"type": "array", "items": {"type": "object", "properties": {
-        "identifier": {"type": "string"}, "title": {"type": "string"}, "branch": {"type": "string"},
-        "status": {"type": "string"}, "labels": {"type": "array", "items": {"type": "string"}},
-        "repo": {"type": "string"}, "blocked_by": {"type": "array", "items": {"type": "object", "properties": {
-            "identifier": {"type": "string"}, "status": {"type": "string"}}, "required": ["identifier", "status"]}}},
-        "required": ["identifier", "title", "branch", "status", "labels", "repo", "blocked_by"]}},
-        "ship": SHIP, "plan": LABELLED, "projects": LABELLED},
-    "required": ["issues", "ship", "plan", "projects"],
-}
+KEEP_LOGS = {"runner.log", "digest.log", "launchd.out", "launchd.err"}  # append-only logs the prune never deletes
+MARK = "<!-- cxj-flow clash check -->"
 
 
 def log(msg):
@@ -44,83 +34,66 @@ def log(msg):
         f.write(line + "\n")
 
 
+@contextlib.contextmanager
+def isolated(state, where, item=""):
+    """One bad item never stops the tick: log the error, keep it for the daily view, carry on with the next item.
+    A lost Linear key is not one item, so it goes up to tick(), which pings once."""
+    try:
+        yield
+    except linear.AuthError:
+        raise
+    except Exception as e:
+        log(f"{where} {item}: skipped after error: {e!r}")
+        errs = state.setdefault("errors", [])
+        errs.append({"at": time.time(), "where": where, "item": str(item), "error": repr(e)[:300]})
+        del errs[:-100]
+
+
 def load_workflow():
     _, front, body = (FLOW / "WORKFLOW.md").read_text().split("---", 2)
     cfg = yaml.safe_load(front)
     if not cfg["tracker"]["team"]:
         sys.exit("WORKFLOW.md: tracker.team is empty — run setup first (see README).")
+    linear.PREFIX = cfg["tracker"].get("comment_prefix") or ""
     return cfg, body.strip()
 
 
-def claude_json(cfg, prompt, schema):
-    out = subprocess.run(["claude", "-p", prompt, "--model", cfg["models"]["dispatcher"], "--output-format", "json",
-                          "--json-schema", json.dumps(schema), "--permission-mode", "dontAsk",
-                          "--allowedTools", cfg["tools"]["linear"]],
-                         capture_output=True, text=True, timeout=600, cwd=FLOW)
-    res = json.loads(out.stdout)
-    # A refused non-Linear tool (a plugin nudging the model towards a sandbox, say) is the permission system working:
-    # the model carries on with Linear. Only a refused Linear tool means the answer can't be trusted.
-    denied = [d for d in res.get("permission_denials") or [] if d.get("tool_name", "").startswith(cfg["tools"]["linear"])]
-    if res.get("is_error") or denied:
-        raise RuntimeError(f"dispatcher failed: {denied or res.get('result')}")
-    so = res.get("structured_output")
-    return so if so is not None else json.loads(res["result"])
-
-
 def labelled(items, wanted):
-    """Identifiers whose own label list really holds one of `wanted`: the small model over-reports (`needs-plan` is not `plan`)."""
+    """Identifiers whose own label list really holds one of `wanted` (`needs-plan` is not `plan`)."""
     return [i["identifier"] for i in items if set(i["labels"]) & set(wanted)]
 
 
 def buildable(items, states, label):
-    """Issues really in an active state with the build label: the small model over-reports here too (it has sent Done ones)."""
-    # ponytail: trusts the status/labels the model copies from Linear; read them over the Linear API if it ever invents those
+    """Issues really in an active state with the build label."""
     return [i for i in items if i["status"] in states and label in i["labels"]]
 
 
 def blocked(issue, terminal):
-    """Blockers that aren't finished yet. Checked here because the small model lets blocked issues through."""
+    """Blockers that aren't finished yet."""
     return [b["identifier"] for b in issue.get("blocked_by") or [] if b["status"] not in terminal]
 
 
-def notify(msg):
-    """Ping the owner: runs $FLOW_HOME/notify.sh "<message>" if you made one (ntfy, Slack, anything). Never raises."""
+def notify(msg, title=None):
+    """Ping the owner: runs $FLOW_HOME/notify.sh "<message>" ["<title>"] if you made one. Never raises.
+    Only clash, outage and failed-apply pings and the one daily view use it; everything else waits for the daily view."""
     hook = FLOW / "notify.sh"
     if DRY or not hook.exists():
         return
     try:
-        subprocess.run([str(hook), msg], capture_output=True, timeout=30)
+        subprocess.run([str(hook), msg] + ([title] if title else []), capture_output=True, timeout=30)
     except Exception as e:
         log(f"notify failed: {e!r}")
 
 
-def find_work(cfg, running_ids):
+def find_work(cfg, running_ids, read=None):
+    """What to build, ship and plan, read exactly from Linear (linear.read_work). The filters stay as a safety net."""
     t, lb = cfg["tracker"], cfg["labels"]
-    prompt = (
-        f"Using the Linear tools (team {t['team']}), with filtered list_issues calls that keep results small, "
-        f"and no other tools:\n"
-        f"1. `issues`: issues in state {t['active_states']} with label `{lb['build']}`, excluding any with labels "
-        f"{[lb['idea'], lb['triage'], lb['decision']]}, any whose title starts with {t['excluded_title_prefixes']}, and any "
-        f"blocked by an issue not in {t['terminal_states']}. For each: identifier, title, gitBranchName as branch, status = its current "
-        f"state name and labels = every label name on it, exactly as Linear returns them, and repo = "
-        f"the repo name from its project description's 'Repo: owner/name' line (just `name`, or 'none'), and blocked_by = "
-        f"every issue it is blocked by (get_issue with relations) as identifier + current status name, [] if none.\n"
-        f"2. `ship`: issues in state {t['handoff_state']} with label `{lb['go']}`, each with status = its current state name.\n"
-        f"3. `plan`: open issues with label `{lb['plan']}` or `{lb['approved']}` (one filtered call per label).\n"
-        f"4. `projects`: projects of this team with the project label `{lb['plan']}` or `{lb['approved']}` (list_projects, one "
-        f"filtered call per label, asking for the labels field). Use the project's name as its identifier.\n"
-        f"For 2, 3 and 4 give each one's identifier and labels = every label name on it, exactly as Linear returns them.\n"
-        f"Read only: change nothing. Return JSON only.")
-    res = claude_json(cfg, prompt, DISPATCH_SCHEMA)
-    # state checked here too: the small model kept sending a Done and a Canceled issue, so the shipper ran ~hourly and pinged each time
+    res = (read or linear.read_work)(cfg)
     res["ship"] = [i["identifier"] for i in buildable(res["ship"], [t["handoff_state"]], lb["go"])]
     res["plan"] = labelled(res["plan"], [lb["plan"], lb["approved"]])
     # a project is planned by the same agent; `project "Name"` tells it which kind it has been handed
     res["plan"] += [f'project "{n}"' for n in labelled(res["projects"], [lb["plan"], lb["approved"]])]
     ok = buildable(res["issues"], t["active_states"], lb["build"])
-    for i in res["issues"]:
-        if i not in ok:
-            log(f"{i['identifier']}: skipped (state '{i['status']}', labels {i['labels']}: not {t['active_states']} + `{lb['build']}`)")
     res["issues"] = [i for i in ok if i["identifier"] not in running_ids]
     return res
 
@@ -136,29 +109,30 @@ def alive(pid):
 def reconcile(cfg, state):
     a = cfg["agent"]
     for ident, r in list(state["running"].items()):
-        logf = Path(r["log"])
-        idle = (time.time() - logf.stat().st_mtime) / 60 if logf.exists() else 0
-        if alive(r["pid"]) and idle < a["stall_minutes"]:
-            continue
-        if alive(r["pid"]):
-            log(f"{ident}: stalled {idle:.0f} min, killing pid {r['pid']}")
-            os.killpg(r["pid"], signal.SIGTERM)
-        del state["running"][ident]
-        text = logf.read_text() if logf.exists() else ""
-        what = f"{ident} {r.get('title', '')}".strip()
-        if "[Flow] ready for review" in text or "[Flow] blocked" in text:
-            log(f"{ident}: finished (attempt {r['attempt']})")
-            state["retries"].pop(ident, None)
-            notify(f"Ready for review: {what}. Add the `{cfg['labels']['go']}` label to ship it." if "[Flow] ready for review" in text
-                   else f"Blocked, has a question for you: {what}")
-        elif r["attempt"] >= a["max_retries"]:
-            log(f"{ident}: gave up after {r['attempt']} attempts — needs a person")
-            state["retries"][ident] = {"attempt": r["attempt"], "due": float("inf")}
-            notify(f"Gave up after {r['attempt']} attempts, needs you: {what}")
-        else:
-            backoff = a["retry_backoff_seconds"][min(r["attempt"] - 1, len(a["retry_backoff_seconds"]) - 1)]
-            state["retries"][ident] = {"attempt": r["attempt"], "due": time.time() + backoff}
-            log(f"{ident}: exited without finishing, retry in {backoff}s")
+        with isolated(state, "reconcile", ident):
+            logf = Path(r["log"])
+            # no log at all counts from the start, so a builder that never wrote one is still caught as stalled
+            idle = (time.time() - (logf.stat().st_mtime if logf.exists() else r.get("started", 0))) / 60
+            if alive(r["pid"]) and idle < a["stall_minutes"]:
+                continue
+            if alive(r["pid"]):
+                log(f"{ident}: stalled {idle:.0f} min, killing pid {r['pid']}")
+                try:
+                    os.killpg(r["pid"], signal.SIGTERM)
+                except ProcessLookupError:
+                    pass  # it exited between the check and the kill
+            del state["running"][ident]
+            text = logf.read_text() if logf.exists() else ""
+            if "[Flow] ready for review" in text or "[Flow] blocked" in text:
+                log(f"{ident}: finished (attempt {r['attempt']})")  # the daily view shows what needs a yes
+                state["retries"].pop(ident, None)
+            elif r["attempt"] >= a["max_retries"]:
+                log(f"{ident}: gave up after {r['attempt']} attempts — needs a person")
+                state["retries"][ident] = {"attempt": r["attempt"], "due": float("inf"), "title": r.get("title", "")}
+            else:
+                backoff = a["retry_backoff_seconds"][min(r["attempt"] - 1, len(a["retry_backoff_seconds"]) - 1)]
+                state["retries"][ident] = {"attempt": r["attempt"], "due": time.time() + backoff}
+                log(f"{ident}: exited without finishing, retry in {backoff}s")
 
 
 def sh(cmd, cwd=None):
@@ -166,10 +140,11 @@ def sh(cmd, cwd=None):
     return out.returncode, (out.stdout + out.stderr).strip()
 
 
-def linear_comment(cfg, ident, text):
-    """One small model call with only the Linear tools: Flow has no Linear key yet (W2 adds one)."""
-    sh(["claude", "-p", f"Add this comment to Linear issue {ident}, exactly as written, and do nothing else:\n\n{text}",
-        "--model", cfg["models"]["dispatcher"], "--permission-mode", "dontAsk", "--allowedTools", cfg["tools"]["linear"]])
+def gh_json(run, cmd, cwd=None):
+    rc, out = run(cmd, cwd)
+    if rc:
+        raise RuntimeError(f"{' '.join(cmd[:3])}: {out[-300:]}")
+    return json.loads(out or "null")
 
 
 def apply_merged(cfg, state, dry, run=sh, save=None):
@@ -188,25 +163,18 @@ def apply_merged(cfg, state, dry, run=sh, save=None):
     team = cfg["tracker"]["team"]
     for name, path in (cfg.get("repos") or {}).items():
         repo_dir = os.path.expanduser(path)
-        try:  # one broken repo must not stop the others
-            rc, out = run(["gh", "pr", "list", "--state", "merged", "--search", f"merged:>={since}", "--limit", "30",
-                           "--json", "number,title,body,headRefName,mergeCommit,url,files"], repo_dir)
-            if rc:
-                raise RuntimeError(out[-300:])
-            prs = json.loads(out or "[]")
-        except Exception as e:
-            log(f"apply-sql: {name}: can't list merged PRs: {e!r}")
-            continue
+        prs = []
+        with isolated(state, "apply-sql: list merged PRs", name):
+            prs = gh_json(run, ["gh", "pr", "list", "--state", "merged", "--search", f"merged:>={since}", "--limit", "30",
+                                "--json", "number,title,body,headRefName,mergeCommit,url,files"], repo_dir) or []
         for pr in prs:
             sha = (pr.get("mergeCommit") or {}).get("oid")
             for f in pr.get("files") or []:
                 key = f"{name}#{pr['number']}:{f['path']}"
                 if not f["path"].endswith(".sql") or key in done or not sha:
                     continue
-                try:
+                with isolated(state, "apply-sql", key):
                     apply_one(cfg, conf, pr, f["path"], sha, key, repo_dir, team, done, dry, run, save)
-                except Exception as e:
-                    log(f"apply-sql: {key}: {e!r}")
 
 
 def apply_one(cfg, conf, pr, path, sha, key, repo_dir, team, done, dry, run, save):
@@ -232,9 +200,271 @@ def apply_one(cfg, conf, pr, path, sha, key, repo_dir, team, done, dry, run, sav
             f"```\n{out[-1500:]}\n```")
     run(["gh", "pr", "comment", str(pr["number"]), "--body", text], repo_dir)
     if issue:
-        linear_comment(cfg, issue, text)
+        linear.comment(issue, text)
     if rc:
-        notify(f"SQL from a merged PR was not applied ({pr['url']}, {path}): {out.splitlines()[-1] if out else ''}")
+        notify(f"SQL from a merged PR was not applied ({pr['url']}, {path}): {out.splitlines()[-1] if out else ''}",
+               "Flow: SQL not applied")
+
+
+# ---------- the code shipper: `go` on an In Review task merges its PR ----------
+
+FAIL = {"FAILURE", "ERROR", "TIMED_OUT", "CANCELLED", "ACTION_REQUIRED", "STARTUP_FAILURE"}
+
+
+def checks(rollup):
+    """One honest line for a PR's checks. A repo with no CI says "none configured", never "green"."""
+    if not rollup:
+        return "none configured"
+    name = lambda c: c.get("name") or c.get("context") or "?"
+    bad = [name(c) for c in rollup if (c.get("conclusion") or c.get("state")) in FAIL]
+    if bad:
+        return "failing: " + ", ".join(bad)
+    wait = [name(c) for c in rollup if c.get("status", "COMPLETED") != "COMPLETED" or c.get("state") in ("PENDING", "EXPECTED")]
+    return ("pending: " + ", ".join(wait)) if wait else f"green ({len(rollup)})"
+
+
+def repo_of_url(url):
+    return "/".join(url.split("/")[3:5])
+
+
+def ship(cfg, state, ids, dry, run=sh, lin=linear):
+    """Merge (squash) the PR of each In Review task the owner labelled `go`, then close the task. No model involved."""
+    t, go = cfg["tracker"], cfg["labels"]["go"]
+    done_state = t["terminal_states"][0]
+    for ident in ids:
+        with isolated(state, "ship", ident):
+            if dry:
+                log(f"DRY RUN would ship {ident}")
+                continue
+            i = lin.issue(ident)
+            if i["status"] != t["handoff_state"] or go not in i["labels"]:
+                continue
+
+            def stop(text, close=False):
+                lin.comment(ident, f"[Ship] {text}")
+                lin.remove_label(i, go)
+                if close:
+                    lin.set_state(i, done_state)
+                log(f"ship {ident}: {text}")
+
+            if not i["prs"]:
+                stop("closed — nothing to merge", close=True)
+                continue
+            views = [gh_json(run, ["gh", "pr", "view", u, "--json", "state,mergeable,headRefName,baseRefName,statusCheckRollup,url,title"])
+                     for u in i["prs"]]
+            open_ = [v for v in views if v["state"] == "OPEN"]
+            if not open_:
+                merged = [v for v in views if v["state"] == "MERGED"]
+                stop(f"merged {merged[0]['url']} — {merged[0]['title']}" if merged else "can't merge: its PR is closed", close=bool(merged))
+                continue
+            if len(open_) > 1:
+                stop(f"can't merge: {len(open_)} open PRs ({', '.join(v['url'] for v in open_)}), merge the right one by hand")
+                continue
+            pr = open_[0]
+            repo = repo_of_url(pr["url"])
+            if repo.split("/")[1] in (cfg.get("skip_repos") or []):
+                stop("this repo ships by hand")
+                continue
+            ci = checks(pr.get("statusCheckRollup"))
+            if pr["mergeable"] == "UNKNOWN" or ci.startswith("pending"):
+                log(f"ship {ident}: waiting ({pr['mergeable']}, checks {ci})")  # keeps `go`, tries next tick
+                continue
+            if pr["mergeable"] != "MERGEABLE" or ci.startswith("failing"):
+                stop(f"can't merge: {'conflicts with ' + pr['baseRefName'] if pr['mergeable'] != 'MERGEABLE' else 'checks ' + ci}")
+                continue
+            # PRs stacked on this branch would be closed when it is deleted: point them at this PR's base first
+            for s in gh_json(run, ["gh", "pr", "list", "-R", repo, "--base", pr["headRefName"], "--state", "open", "--json", "number"]):
+                run(["gh", "pr", "edit", str(s["number"]), "-R", repo, "--base", pr["baseRefName"]])
+            rc, out = run(["gh", "pr", "merge", pr["url"], "--squash", "--delete-branch"])
+            if rc:
+                stop(f"can't merge: {out.splitlines()[-1] if out else 'gh pr merge failed'}")
+                continue
+            stop(f"merged {pr['url']} — {pr['title']}", close=True)
+
+
+# ---------- the clash check: one comment kept current on every open PR ----------
+
+def rules_for(conf, repo):
+    rules = {}
+    for src in ((conf.get("default") or {}), (conf.get("repos") or {}).get(repo) or {}):
+        for area, globs in src.items():
+            rules.setdefault(area, []).extend(globs)
+    return rules
+
+
+def touches(paths, rules):
+    """{area: [paths]} for the live systems a PR touches (database, n8n, live messaging: per-repo globs in WORKFLOW.md)."""
+    hit = {a: [p for p in paths if any(fnmatch.fnmatch(p, g) for g in globs)] for a, globs in rules.items()}
+    return {a: ps for a, ps in hit.items() if ps}
+
+
+def short(p):
+    return f"{p['repo'].split('/')[1]}#{p['number']}"
+
+
+def dry_runs(cfg, state, p, run):
+    """apply-sql --dry-run of each `-- apply` SQL file in the PR, at its head. Cached by head + base SHA."""
+    cmd = (cfg.get("apply_sql") or {}).get("command")
+    cache, out = state.setdefault("dry_runs", {}), []
+    for path in p["paths"] if cmd else []:
+        if not path.endswith(".sql"):
+            continue
+        k = f"{p['url']}@{p['headRefOid'][:12]}.{p['baseRefOid'][:12]}:{path}"
+        if k not in cache:
+            rc, sql = run(["gh", "api", "-H", "Accept: application/vnd.github.raw",
+                           f"repos/{p['repo']}/contents/{urllib.parse.quote(path)}?ref={p['headRefOid']}"])
+            cache[k] = None  # deleted in this PR, or not marked `-- apply`: never applied, so nothing to dry-run
+            if rc == 0 and sql.lstrip().lower().startswith("-- apply"):
+                LOGS.mkdir(parents=True, exist_ok=True)
+                tmp = LOGS / ("dry-" + re.sub(r"[^\w.-]", "_", k))
+                tmp.write_text(sql)
+                rc, res = run([os.path.expanduser(cmd), str(tmp), "--dry-run"])
+                tmp.unlink()
+                cache[k] = {"ok": rc == 0, "out": res[-800:]}
+        if cache[k]:
+            out.append((path, cache[k]))
+    return out
+
+
+def clash_body(cfg, state, p, prs, run):
+    t = p["touches"]
+    others, live = [], []
+    for o in prs:
+        if o is p:
+            continue
+        shared = sorted(set(o["touches"]) & set(t))
+        files = sorted(set(o["paths"]) & set(p["paths"])) if o["repo"] == p["repo"] else []
+        if shared or files:
+            why = shared + ([f"same files: {', '.join(files[:3])}"] if files else [])
+            title = f" \"{o['title'][:60]}\"" if o["repo"] == p["repo"] else ""  # another repo's title may be private
+            others.append(f"{short(o)}{title} ({'; '.join(why)})")
+        if shared:
+            live.append(o["url"])
+    sql = dry_runs(cfg, state, p, run)
+    ci = checks(p.get("statusCheckRollup"))
+    what = "; ".join(f"{a} ({', '.join(fs[:3])}{', …' if len(fs) > 3 else ''})" for a, fs in sorted(t.items()))
+    lines = [MARK, f"**Clash check** · kept current by CXJ Flow · head `{p['headRefOid'][:7]}`", "",
+             f"- **Touches:** {what or 'nothing live (no database, n8n or messaging paths)'}",
+             f"- **In flight in the same area:** {'; '.join(others) or 'none'}",
+             f"- **Checks:** {ci}"]
+    for path, r in sql:
+        lines += [f"- **SQL dry run** `{path}`: {'ok' if r['ok'] else 'REFUSED'}", "  ```", *("  " + l for l in r["out"].splitlines()), "  ```"]
+    line = (f"{short(p)} {p['title'][:50]} — {', '.join(sorted(t)) or 'nothing live'}; "
+            f"{len(others)} in flight nearby; checks {ci}" + "".join(f"; SQL {path} REFUSED" for path, r in sql if not r["ok"]))
+    sig = sorted(live) + [path for path, r in sql if not r["ok"]]  # what is worth a ping: a live-area clash, a refused dry run
+    return "\n".join(lines), line, sig
+
+
+def put_comment(run, p, body, cid):
+    """Edit Flow's one clash comment on the PR; find it first if the state lost its id, so there is never a second one."""
+    issue = f"repos/{p['repo']}/issues"
+    if not cid:
+        rc, out = run(["gh", "api", f"{issue}/{p['number']}/comments", "--paginate", "--jq",
+                       f'.[] | select(.body | startswith("{MARK}")) | .id'])
+        cid = out.split()[0] if rc == 0 and out.split() else None
+    if cid:
+        rc, _ = run(["gh", "api", "-X", "PATCH", f"{issue}/comments/{cid}", "-f", f"body={body}", "--jq", ".id"])
+        if rc == 0:
+            return cid
+    rc, out = run(["gh", "api", f"{issue}/{p['number']}/comments", "-f", f"body={body}", "--jq", ".id"])
+    if rc:
+        raise RuntimeError(f"can't comment on {p['url']}: {out[-300:]}")
+    return out.strip()
+
+
+def clash_check(cfg, state, dry, run=sh):
+    conf = cfg.get("clash") or {}
+    prs, listed = [], set()
+    for repo in conf.get("repos") or {}:
+        with isolated(state, "clash: list PRs", repo):
+            rules = rules_for(conf, repo)
+            for p in gh_json(run, ["gh", "pr", "list", "-R", repo, "--state", "open", "--limit", "50", "--json",
+                                   "number,title,url,headRefOid,baseRefOid,files,statusCheckRollup"]) or []:
+                p["repo"], p["paths"] = repo, [f["path"] for f in p.get("files") or []]
+                p["touches"] = touches(p["paths"], rules)
+                prs.append(p)
+            listed.add(repo)
+    cache = state.setdefault("clash", {})
+    for p in prs:
+        with isolated(state, "clash", p["url"]):
+            body, line, sig = clash_body(cfg, state, p, prs, run)
+            c = cache.get(p["url"]) or {}
+            key = hashlib.sha256(body.encode()).hexdigest()[:16]
+            if c.get("key") == key:
+                continue  # nothing changed since the last tick: no GitHub write
+            if dry:
+                log(f"DRY RUN would update the clash check on {p['url']}: {line}")
+                continue
+            c["id"] = put_comment(run, p, body, c.get("id"))
+            if sig and sig != c.get("sig"):
+                notify(f"Clash: {line}\n{p['url']}", "Flow: clash")
+            c.update(key=key, line=line, sig=sig, repo=p["repo"])
+            cache[p["url"]] = c
+    open_urls = {p["url"] for p in prs}
+    for url in [u for u, c in cache.items() if c.get("repo") in listed and u not in open_urls]:
+        del cache[url]  # merged or closed
+    for k in [k for k in state.get("dry_runs", {}) if k.split("@")[0] not in open_urls]:
+        del state["dry_runs"][k]
+
+
+# ---------- gate agents, builders ----------
+
+def unsorted(tasks, done_label, now=None):
+    """Open Inbox tasks the sorter hasn't labelled yet (and not added in the last 10 minutes: still being typed)."""
+    now = now or time.time()
+
+    def age(t):
+        try:
+            return now - calendar.timegm(time.strptime(t["added_at"][:19], "%Y-%m-%dT%H:%M:%S"))
+        except (KeyError, TypeError, ValueError):
+            return 1e9
+    return [t for t in tasks if done_label not in (t.get("labels") or []) and not t.get("content", "").startswith("Flow —")
+            and age(t) >= 600]
+
+
+def todoist_inbox(cfg):
+    """Open Inbox tasks without the sorter's label, read over the Todoist API. None when there is no key in the Keychain
+    (security add-generic-password -s todoist-api-key -a cxj-flow -w): the sorter then keeps to its timer."""
+    out = subprocess.run(["security", "find-generic-password", "-s", "todoist-api-key", "-a", "cxj-flow", "-w"],
+                         capture_output=True, text=True, timeout=30)
+    if out.returncode or not out.stdout.strip():
+        return None
+    q = urllib.parse.quote(f"#Inbox & !@{cfg['todoist']['done_label']}")
+    req = urllib.request.Request(f"https://api.todoist.com/api/v1/tasks/filter?query={q}&limit=50",
+                                 headers={"Authorization": f"Bearer {out.stdout.strip()}"})
+    with urllib.request.urlopen(req, timeout=30) as r:
+        res = json.load(r)
+    return res.get("results", []) if isinstance(res, dict) else res
+
+
+def sorter_due(cfg, state, inbox=todoist_inbox):
+    """Sorter-once: start it only when the Inbox has a task it hasn't sorted, at most every triage_every_minutes
+    (so a task it can't sort never costs a run per tick). No Todoist key: the timer alone, as before."""
+    if time.time() - state.get("last_triage", 0) < cfg["todoist"]["triage_every_minutes"] * 60:
+        return False
+    tasks = inbox(cfg)
+    state["sorter_mode"] = "timer (no Todoist key)" if tasks is None else "new tasks only"
+    return tasks is None or bool(unsorted(tasks, cfg["todoist"]["done_label"]))
+
+
+def gates(cfg, found, state, dry):
+    """Gate agents (agents.py): plan on `plan`/`approved`, the Todoist sorter when the Inbox has something new."""
+    todo = {"plan": found["plan"]}
+    if cfg["tools"].get("todoist"):
+        with isolated(state, "sorter", "inbox"):
+            if sorter_due(cfg, state):
+                todo["triage"] = ["inbox"]
+                if not dry:
+                    state["last_triage"] = time.time()
+    for name, ids in todo.items():
+        if not ids:
+            continue
+        if dry:
+            log(f"DRY RUN would start {name} agent for {', '.join(ids)}")
+            continue
+        with isolated(state, f"{name} agent", ", ".join(ids)):
+            if (pid := agents.spawn(cfg, name, ids, state, alive)):
+                log(f"{name} agent: started pid {pid} for {', '.join(ids)}")
 
 
 def workspace(issue, repo_dir):
@@ -256,110 +486,119 @@ def render(body, cfg, issue, ws, attempt):
     return re.sub(r"\{\{\s*([\w.]+)\s*\}\}", lambda m: vals.get(m.group(1), m.group(0)), body)
 
 
-def gates(cfg, found, state, dry):
-    """Gate agents (agents.py): ship on `go`, plan on `plan`/`approved`, Todoist triage on a timer."""
-    todo = {"ship": found["ship"], "plan": found["plan"]}
-    if cfg["tools"].get("todoist") and time.time() - state.get("last_triage", 0) >= cfg["todoist"]["triage_every_minutes"] * 60:
-        todo["triage"] = ["inbox"]
-        if not dry:
-            state["last_triage"] = time.time()
-    for name, ids in todo.items():
-        if not ids:
-            continue
-        if dry:
-            log(f"DRY RUN would start {name} agent for {', '.join(ids)}")
-            continue
-        try:  # one broken gate agent must not stop the builders
-            if (pid := agents.spawn(cfg, name, ids, state, alive)):
-                log(f"{name} agent: started pid {pid} for {', '.join(ids)}")
-        except Exception as e:
-            log(f"{name} agent: failed to start: {e!r}")
+def start(cfg, body, issue, ws, attempt):
+    logf = LOGS / f"{issue['identifier']}-{int(time.time())}.log"
+    with open(logf, "w") as out:
+        p = subprocess.Popen(["claude", "-p", render(body, cfg, issue, ws, attempt), "--model", cfg["models"]["builder"],
+                              "--permission-mode", "auto", "--output-format", "stream-json", "--verbose"],
+                             cwd=ws, stdout=out, stderr=subprocess.STDOUT, start_new_session=True)
+    return p.pid, logf
 
 
-def gate_results(state):
-    """When a plan or ship agent has finished, pass its reply on (one plain line per item). Triage stays quiet."""
-    for name, job in state.get("jobs", {}).items():
-        if name == "triage" or job.get("told") is not False or alive(job["pid"]):
-            continue
-        job["told"] = True
-        text = Path(job["log"]).read_text().strip() if Path(job["log"]).exists() else ""
-        if text:
-            notify(f"{name.capitalize()} agent: {text[-400:]}")
-
-
-def dispatch(cfg, body, state, dry):
-    a = cfg["agent"]
-    found = find_work(cfg, set(state["running"]))
-    gates(cfg, found, state, dry)
-    slots = a["max_concurrent"] - len(state["running"])
+def dispatch(cfg, body, state, found, dry):
+    slots = cfg["agent"]["max_concurrent"] - len(state["running"])
     for issue in found["issues"]:
         if slots <= 0:
             break
         ident = issue["identifier"]
-        retry = state["retries"].get(ident)
-        if retry and retry["due"] > time.time():
-            continue
-        if (waiting := blocked(issue, cfg["tracker"]["terminal_states"])):
-            log(f"{ident}: skipped (blocked by {', '.join(waiting)})")
-            continue
-        repos = cfg.get("repos") or {}
-        if issue["repo"] not in repos or issue["repo"] in cfg.get("skip_repos", []):
-            log(f"{ident}: skipped (repo '{issue['repo']}' not in WORKFLOW.md repos, or in skip_repos)")
-            continue
-        attempt = (retry["attempt"] + 1) if retry else 1
-        if dry:
-            log(f"DRY RUN would build {ident} '{issue['title']}' in {issue['repo']} (attempt {attempt})")
+        with isolated(state, "start", ident):  # one broken workspace never stops the next issue
+            retry = state["retries"].get(ident)
+            if retry and retry["due"] > time.time():
+                continue
+            if (waiting := blocked(issue, cfg["tracker"]["terminal_states"])):
+                log(f"{ident}: skipped (blocked by {', '.join(waiting)})")
+                continue
+            repos = cfg.get("repos") or {}
+            if issue["repo"] not in repos or issue["repo"] in cfg.get("skip_repos", []):
+                log(f"{ident}: skipped (repo '{issue['repo']}' not in WORKFLOW.md repos, or in skip_repos)")
+                continue
+            attempt = (retry["attempt"] + 1) if retry else 1
+            if dry:
+                log(f"DRY RUN would build {ident} '{issue['title']}' in {issue['repo']} (attempt {attempt})")
+                slots -= 1
+                continue
+            ws = workspace(issue, Path(os.path.expanduser(repos[issue["repo"]])))
+            pid, logf = start(cfg, body, issue, ws, attempt)
+            state["running"][ident] = {"pid": pid, "log": str(logf), "attempt": attempt, "started": time.time(),
+                                       "title": issue["title"]}
+            log(f"{ident}: started pid {pid} attempt {attempt} in {ws}")
             slots -= 1
-            continue
-        ws = workspace(issue, Path(os.path.expanduser(repos[issue["repo"]])))
-        logf = LOGS / f"{ident}-{int(time.time())}.log"
-        with open(logf, "w") as out:
-            p = subprocess.Popen(["claude", "-p", render(body, cfg, issue, ws, attempt), "--model", cfg["models"]["builder"],
-                                  "--permission-mode", "auto", "--output-format", "stream-json", "--verbose"],
-                                 cwd=ws, stdout=out, stderr=subprocess.STDOUT, start_new_session=True)
-        state["running"][ident] = {"pid": p.pid, "log": str(logf), "attempt": attempt, "started": time.time(),
-                                   "title": issue["title"]}
-        log(f"{ident}: started pid {p.pid} attempt {attempt} in {ws}")
-        slots -= 1
+
+
+# ---------- housekeeping ----------
+
+def prune(cfg, state, dry, run=sh, lookup=None):
+    """Once a day: remove workspaces whose issue is Done/Canceled (never one still running), and agent logs over 14 days."""
+    if time.time() - state.get("last_prune", 0) < 86400:
+        return
+    root = FLOW / "workspaces"
+    names = [d.name for d in root.iterdir() if d.is_dir() and re.fullmatch(r"[A-Z]+-\d+", d.name)] if root.exists() else []
+    found = (lookup or linear.states)(names) if names else {}
+    for name in names:
+        with isolated(state, "prune", name):
+            if name in state["running"] or found.get(name) not in cfg["tracker"]["terminal_states"]:
+                continue
+            ws = root / name
+            if dry:
+                log(f"DRY RUN would remove workspace {name} ({found[name]})")
+                continue
+            rc, common = run(["git", "-C", str(ws), "rev-parse", "--path-format=absolute", "--git-common-dir"])
+            rc = rc or run(["git", "-C", str(Path(common).parent), "worktree", "remove", "--force", str(ws)])[0]
+            if rc:
+                raise RuntimeError(f"git worktree remove failed for {ws}")
+            log(f"prune: removed workspace {name} ({found[name]})")
+    cutoff = time.time() - 14 * 86400
+    for f in LOGS.glob("*") if LOGS.exists() else []:
+        with isolated(state, "prune log", f.name):
+            if f.is_file() and f.name not in KEEP_LOGS and f.stat().st_mtime < cutoff and not dry:
+                f.unlink()
+    if not dry:
+        state["last_prune"] = time.time()
+
+
+def heartbeat(cfg, state):
+    """Tell the watcher on another machine (n8n on the VPS) this tick ran. It pings once if the beats stop, or if
+    linear_ok stays false. Never raises."""
+    url = (cfg.get("heartbeat") or {}).get("url")
+    if not url or DRY:
+        return
+    day_ago = time.time() - 86400
+    body = {"linear_ok": state.get("linear_ok", True), "at": int(time.time()),
+            "errors_24h": sum(e["at"] > day_ago for e in state.get("errors", []))}
+    try:
+        req = urllib.request.Request(url, json.dumps(body).encode(), {"Content-Type": "application/json"})
+        urllib.request.urlopen(req, timeout=15).close()
+    except Exception as e:
+        log(f"heartbeat failed: {e!r}")
+
+
+def tick(cfg, body, state, dry):
+    reconcile(cfg, state)
+    apply_merged(cfg, state, dry)
+    try:
+        with isolated(state, "linear", "read"):
+            found = find_work(cfg, set(state["running"]))
+            if state.get("linear_ok") is False:
+                log("Linear readable again")
+            state["linear_ok"] = True
+            ship(cfg, state, found["ship"], dry)
+            gates(cfg, found, state, dry)
+            dispatch(cfg, body, state, found, dry)
+    except linear.AuthError as e:
+        log(f"can't read Linear: {e}")
+        if state.get("linear_ok", True):
+            notify(f"Flow can't read Linear, so it builds and ships nothing until the key works again: {e}", "Flow: outage")
+        state["linear_ok"] = False
+    with isolated(state, "clash"):
+        clash_check(cfg, state, dry)
+    with isolated(state, "prune"):
+        prune(cfg, state, dry)
 
 
 def main():
     if "--self-check" in sys.argv:
-        got = labelled([{"identifier": "A", "labels": ["needs-plan"]}, {"identifier": "B", "labels": ["Bug", "plan"]},
-                        {"identifier": "C", "labels": []}], ["plan", "approved"])
-        assert got == ["B"], got
-        waits = blocked({"blocked_by": [{"identifier": "X", "status": "Done"}, {"identifier": "Y", "status": "Todo"}]}, ["Done", "Canceled"])
-        assert waits == ["Y"], waits
-        assert blocked({}, ["Done"]) == []
-        todo = {"identifier": "T", "status": "Todo", "labels": ["agent"]}
-        got = buildable([todo, {"identifier": "D", "status": "Done", "labels": ["agent"]},
-                         {"identifier": "N", "status": "Todo", "labels": ["Bug"]}], ["Todo"], "agent")
-        assert got == [todo], got
-        # merged PR with an `-- apply` file: apply-sql runs once, never twice; unmarked SQL is never applied
-        calls, saved = [], []
-        pr = {"number": 7, "title": "Fix bookings (CXJ-12)", "body": "", "headRefName": "fix", "url": "https://x/pull/7",
-              "mergeCommit": {"oid": "abc"}, "files": [{"path": "a.sql"}, {"path": "b.sql"}, {"path": "x.py"}]}
-        def fake(cmd, cwd=None):
-            calls.append(cmd)
-            if cmd[:3] == ["gh", "pr", "list"]:
-                return 0, json.dumps([pr])
-            if cmd[:2] == ["git", "show"]:
-                return 0, "-- apply\nupdate t set a = 1" if cmd[2].endswith("a.sql") else "update t set a = 2"
-            return 0, "applied 1"
-        cfg = {"apply_sql": {"command": "apply-sql"}, "repos": {"r": "/tmp"}, "tracker": {"team": "CXJ"},
-               "models": {"dispatcher": "haiku"}, "tools": {"linear": "mcp__linear"}}
-        st = {}
-        global linear_comment
-        real, linear_comment = linear_comment, lambda *a: calls.append(["linear", *a[1:]])
-        for _ in range(2):
-            apply_merged(cfg, st, False, fake, save=lambda: saved.append(dict(st["applied"])))
-        linear_comment = real
-        applies = [c for c in calls if c[0] == "apply-sql"]
-        assert len(applies) == 1 and "--once" in applies[0] and applies[0][-2:] == ["--issue", "CXJ-12"], applies
-        assert saved and saved[0]["r#7:a.sql"] == "applying", saved  # marked before apply-sql ran
-        assert st["applied"] == {"r#7:a.sql": "applied", "r#7:b.sql": "not marked -- apply"}, st
-        assert sum(c[:3] == ["gh", "pr", "comment"] for c in calls) == 1 and ["linear", "CXJ-12"] == [c[:2] for c in calls if c[0] == "linear"][0]
-        return print("ok")
+        import selfcheck
+        return selfcheck.run()
     global DRY
     dry = DRY = "--dry-run" in sys.argv
     FLOW.mkdir(parents=True, exist_ok=True)
@@ -370,16 +609,14 @@ def main():
             return  # previous tick still running
         cfg, body = load_workflow()
         if cfg.get("self_update"):
-            for d in {CODE, FLOW}:  # the code, and your own files if they live in another repo
-                subprocess.run(["git", "-C", d, "pull", "-q", "--rebase", "--autostash"], capture_output=True, timeout=120)
+            for d in {CODE, FLOW}:  # the code, and your own files if they live in another repo; never rebases local work
+                subprocess.run(["git", "-C", d, "pull", "-q", "--ff-only"], capture_output=True, timeout=120)
             cfg, body = load_workflow()
         state = json.loads(STATE.read_text()) if STATE.exists() else {"running": {}, "retries": {}}
-        try:  # save even when the dispatcher fails, or reconcile/gate_results ping the same thing again next tick
-            reconcile(cfg, state)
-            apply_merged(cfg, state, dry)
-            gate_results(state)
-            dispatch(cfg, body, state, dry)
+        try:  # save even when a step fails, or the same thing is redone next tick
+            tick(cfg, body, state, dry)
         finally:
+            heartbeat(cfg, state)
             if not dry:
                 STATE.write_text(json.dumps(state, indent=1))
 

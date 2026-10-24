@@ -1,0 +1,13 @@
+{
+ "issues": [
+  {"identifier": "CXJ-1", "title": "Plain buildable task", "branch": "cxj-1-plain", "status": "Todo", "labels": ["agent"], "repo": "cxj-flow", "blocked_by": []},
+  {"identifier": "CXJ-2", "title": "Blocked by a Todo and a Done one", "branch": "cxj-2", "status": "Todo", "labels": ["agent", "Bug"], "repo": "app",
+   "blocked_by": [{"identifier": "CXJ-3", "status": "Todo"}, {"identifier": "CXJ-4", "status": "Done"}]},
+  {"identifier": "CXJ-7", "title": "No project, so no repo", "branch": "cxj-7", "status": "Todo", "labels": ["agent"], "repo": "none", "blocked_by": []},
+  {"identifier": "CXJ-8", "title": "Project says Repo: none", "branch": "cxj-8", "status": "Todo", "labels": ["agent"], "repo": "none", "blocked_by": []},
+  {"identifier": "CXJ-10", "title": "Repo as a markdown link", "branch": "cxj-10", "status": "Todo", "labels": ["agent"], "repo": "agents", "blocked_by": []}
+ ],
+ "ship": ["CXJ-20"],
+ "plan": ["CXJ-30", "CXJ-31", "project \"Some project\""],
+ "projects": [{"identifier": "Some project", "status": "", "labels": ["plan"]}]
+}

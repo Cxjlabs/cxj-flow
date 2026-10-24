@@ -2,8 +2,8 @@
   plan     on a project         -> planner writes the plan into the project + flat issues under it (nothing built yet)
   plan     on a single idea     -> planner writes a plan comment + sub-tasks on that issue
   approved on either            -> planner gives the planned tasks the build label + Todo (the builder takes over)
-  go       on an In Review task -> shipper merges the PR and closes the task
-Todoist triage runs on a timer and feeds new ideas into Linear.
+  go       on an In Review task -> runner.py's code shipper merges the PR and closes the task (no agent)
+The Todoist sorter (triage) runs when the Inbox has a task it hasn't sorted, and feeds new ideas into Linear.
 """
 import os, subprocess, time
 from pathlib import Path
@@ -21,22 +21,6 @@ def prompts(cfg):
     lb, owner, team = cfg["labels"], cfg["owner"] or "the owner", cfg["tracker"]["team"]
     skip = ", ".join(cfg.get("skip_repos") or []) or "none"
     return {
-        "ship": f"""You are the CXJ Flow ship agent for Linear team {team}. {owner} said "go" by adding the label `{lb['go']}` to: {{ids}}.
-For each one:
-1. Confirm it is in state {cfg['tracker']['handoff_state']} and still has `{lb['go']}` (if not, skip it).
-2. Find its pull request (the `[Flow] ready for review: <url>` comment, an attachment, or the PR whose title starts with the identifier).
-   No PR at all (work done outside git): comment "[Ship] closed — nothing to merge", remove `{lb['go']}`, move to Done, stop.
-3. If the PR's repo is one of: {skip} — do NOT merge: comment "[Ship] this repo ships by hand", remove `{lb['go']}`, stop.
-4. `gh pr view <url> --json state,mergeable,mergeStateStatus,headRefName,baseRefName` and `gh pr checks <url>`. Already merged: go to step 7.
-   Not mergeable or a check failed: comment "[Ship] can't merge: <reason in one line>", remove `{lb['go']}`, leave it.
-5. Other open PRs built on top of this one's branch would be closed when that branch is deleted. Find them with
-   `gh pr list --repo <owner/name> --base <this PR's head branch> --state open --json number` and, for each, run
-   `gh pr edit <number> --repo <owner/name> --base <this PR's base branch>` before merging.
-6. `gh pr merge <url> --squash --delete-branch`.
-7. Comment "[Ship] merged <url> — <one line: what is now live, for whom>", remove `{lb['go']}`, move the issue to Done.
-Never merge anything not listed above. {RULES}
-Reply with one line per issue: identifier + merged / skipped / can't merge.""",
-
         "plan": f"""You are the CXJ Flow planning agent for Linear team {team}. Work to handle: {{ids}}. {CONTEXT}
 An entry written `project "Name"` is a Linear project (cases P1 and P2, using PROJECT labels); anything else is an issue identifier (cases A and B).
 
@@ -83,10 +67,12 @@ Reply with one line per issue: identifier + what you did.""",
         "triage": f"""You are the CXJ Flow Todoist triage agent. {owner} drops tasks into the Todoist Inbox. {CONTEXT}
 1. List the Inbox's OPEN tasks only. Skip, and never touch: completed tasks; tasks with the label `{cfg['todoist']['done_label']}`;
    tasks whose title starts with "Flow —"; tasks created less than 10 minutes ago.
+   Every task you sort gets the label `{cfg['todoist']['done_label']}`, whatever kind it is: that is how it is never sorted twice.
 2. For each remaining task, search Linear (team {team}, all states including Done/Canceled) for an issue that already covers it.
    If one exists: add the `{cfg['todoist']['done_label']}` label to the Todoist task, comment the Linear link on it, nothing else.
 3. Otherwise sort it:
-   - action = something {owner} does personally (call, message, decide, buy). Leave it in Todoist, untouched.
+   - action = something {owner} does personally (call, message, decide, buy). Leave it in Todoist; only add the label
+     `{cfg['todoist']['done_label']}`, nothing else.
    - idea = a "what if / we could". Create a Linear issue in Backlog, label `{lb['idea']}`.
    - build request = a clear change wanted to a system, code or data. Create a Linear issue in Backlog, label `{lb['triage']}`.
    - big build request = more than one change (several parts, a whole feature or system, a clean-up across many things).
@@ -102,9 +88,7 @@ Reply with one line per task: title → action / idea <id> / build <id> / alread
 
 def tools(cfg, name):
     linear, todoist = cfg["tools"]["linear"], cfg["tools"].get("todoist")
-    return {"ship": [linear, "Bash(gh pr view:*)", "Bash(gh pr checks:*)", "Bash(gh pr list:*)", "Bash(gh pr edit:*)",
-                     "Bash(gh pr merge:*)"],
-            "plan": [linear, "Read", "Grep", "Glob"],
+    return {"plan": [linear, "Read", "Grep", "Glob"],
             "triage": [linear, todoist]}[name]
 
 
@@ -118,7 +102,7 @@ def spawn(cfg, name, ids, state, alive):
     logf = logs / f"{name}-{int(time.time())}.log"
     with open(logf, "w") as out:
         p = subprocess.Popen(["claude", "-p", prompts(cfg)[name].replace("{ids}", ", ".join(ids)),
-                              "--model", cfg["models"][{"plan": "planner", "ship": "shipper"}.get(name, name)], "--permission-mode", "dontAsk", "--allowedTools", *tools(cfg, name)],
+                              "--model", cfg["models"][{"plan": "planner"}.get(name, name)], "--permission-mode", "dontAsk", "--allowedTools", *tools(cfg, name)],
                              cwd=FLOW, stdout=out, stderr=subprocess.STDOUT, start_new_session=True)
     state["jobs"][name] = {"pid": p.pid, "log": str(logf), "started": time.time(), "told": False}
     return p.pid
