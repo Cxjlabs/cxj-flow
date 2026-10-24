@@ -33,4 +33,4 @@ When the user says "set me up", or `WORKFLOW.md` has `team: ""`, or `context/COM
 - Pings: only clash, outage, failed apply and the daily view. Anything else waits for the daily view.
 - Every change keeps `python3 flow/runner.py --self-check` green; new behaviour adds a case in `flow/selfcheck.py`.
 - Keep it small: a new feature is a few lines in an existing file or a WORKFLOW.md setting before it is a new file.
-  SQL from merged PRs is applied only when WORKFLOW.md sets `apply_sql.command` (ABC: `~/.claude/bin/apply-sql`).
+  SQL from merged PRs is applied only when WORKFLOW.md sets `apply_sql.command` (a script of your own; see the README).

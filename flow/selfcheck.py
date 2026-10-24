@@ -16,12 +16,12 @@ CFG = {"tracker": {"team": "CXJ", "active_states": ["Todo"], "handoff_state": "I
 # globs like a real WORKFLOW.md, tested on real file lists of two merged PRs (paths renamed)
 CLASH = {"default": {"database": ["*.sql", "supabase/migrations/*", "db/migrations/*"], "n8n": ["*n8n*"]},
          "repos": {"o/ops": {"live messaging": ["bot/agent/*"]},
-                   "o/web-app": {"live messaging": ["*send*", "*/messages/*", "*channel-actions*", "*ghl*"]}}}
+                   "o/web-app": {"live messaging": ["*send*", "*/messages/*", "*channel-actions*", "*crm*"]}}}
 PR20 = ["data/cleanup/README.md", "data/cleanup/fix-42/fix-42-fix.sql", "data/cleanup/fix-42/fix-42-rollback.sql",
         "data/cleanup/fix-42/fix-42-test.mjs", "data/cleanup/fix-42/fix-42-verify.sql"]
-PR37 = ["DOCS.md", "src/app/(app)/sales/calls/[bookingId]/channel-actions.ts", "src/app/api/ghl-calendar/slots/route.ts",
-        "src/components/sales/call-actions.tsx", "src/lib/sales/record.ts",
-        "supabase/migrations/20261022a_booking_channel_override.sql", "supabase/migrations/20261022a_booking_channel_override_verify.sql"]
+PR37 = ["DOCS.md", "src/app/(app)/orders/[orderId]/channel-actions.ts", "src/app/api/crm-calendar/slots/route.ts",
+        "src/components/orders/order-actions.tsx", "src/lib/orders/record.ts",
+        "supabase/migrations/20261022a_order_channel_override.sql", "supabase/migrations/20261022a_order_channel_override_verify.sql"]
 
 
 def golden():
@@ -41,7 +41,7 @@ def golden():
 def apply_once():
     """merged PR with an `-- apply` file: apply-sql runs once, never twice; unmarked SQL is never applied"""
     calls, saved = [], []
-    pr = {"number": 7, "title": "Fix bookings (CXJ-12)", "body": "", "headRefName": "fix", "url": "https://x/pull/7",
+    pr = {"number": 7, "title": "Fix orders (CXJ-12)", "body": "", "headRefName": "fix", "url": "https://x/pull/7",
           "mergeCommit": {"oid": "abc"}, "files": [{"path": "a.sql"}, {"path": "b.sql"}, {"path": "x.py"}]}
 
     def fake(cmd, cwd=None):
@@ -172,7 +172,7 @@ def clash():
         assert len(writes) == 2 and pings == [], writes  # nothing changed: no GitHub write, no ping
         # a new push to web-app#37 changes table t, which ops#1 changes too: a NEW clash, pinged once, by the newer PR
         prs["o/web-app"][0]["headRefOid"] = "e" * 40
-        sql["supabase/migrations/20261022a_booking_channel_override.sql"] = "alter table public.t add column y int;"
+        sql["supabase/migrations/20261022a_order_channel_override.sql"] = "alter table public.t add column y int;"
         runner.clash_check(cfg, st, False, gh)
         assert len(pings) == 1 and "web-app#37" in pings[0], pings
         assert "same tables: public.t" in writes[-1][-3], writes[-1]
@@ -198,40 +198,38 @@ def clash():
 
 # The real false alarm of 24 Oct: two open PRs that both carry .sql files but share no file and change no common table.
 # File lists exact (names of people/projects swapped); SQL cut down to statements with the same changed tables.
-PR24 = ["data/ops/db-cleanup/fix-300/2026-10-16-backfill-32-rollback.sql", "data/ops/db-cleanup/fix-300/2026-10-16-payers-without-booking-60d.csv",
-        "data/ops/db-cleanup/fix-300/fix-300-check.sql", "data/ops/db-cleanup/fix-300/fix-300-merge.sql",
-        "data/ops/db-cleanup/fix-300/fix-300-nightly-bookings-rollback.sql", "data/ops/db-cleanup/fix-300/fix-300-nightly-bookings.sql",
-        "data/ops/db-cleanup/fix-300/fix-300-rollback.sql", "data/ops/db-cleanup/fix-300/fix-300-rule.sql",
-        "data/ops/db-cleanup/fix-300/fix-300-test.mjs", "data/ops/db-cleanup/fix-300/fix-300-verify.sql"]
-PR31 = ["setting/bot/agent/agent.py", "setting/bot/agent/knowledge.md", "setting/bot/agent/rag.py", "setting/bot/agent/server.py",
-        "setting/bot/agent/sql/coaching-slot-melbourne.sql", "setting/bot/agent/sql/bot-events.sql", "setting/bot/agent/sql/bot-knowledge.sql",
-        "setting/bot/agent/sql/bot-messages-failed.sql", "setting/bot/agent/sql/bot-switch-on-booking.sql",
-        "setting/bot/agent/sql/bot-templates.sql", "setting/bot/agent/tools.py", "setting/bot/prompt.md"]
-SQL24 = {"2026-10-16-backfill-32-rollback.sql": "update bookings set setter = null where id in (select id from fix300_before);",
-         "fix-300-check.sql": "select count(*) from payments p join bookings b on b.id = p.booking_id;",
-         "fix-300-merge.sql": "with x as (select 1 as id) update bookings b set person_id = x.id from x;",
-         "fix-300-nightly-bookings-rollback.sql": "delete from bookings where source = 'nightly';",
-         "fix-300-nightly-bookings.sql": "insert into bookings (id) select id from payers; update public.bookings set x = 1 where false;\n"
-                                          "insert into data_quality_log (check_name) values ('nightly');",
-         "fix-300-rollback.sql": "delete from data_quality_log where check_name = 'fix-300'; update persons set a = 1; delete from person_identifiers;\n"
-                                 "update call_outcomes set b = 2; delete from identity_match_queue; update bookings set c = 3;",
-         "fix-300-rule.sql": "select * from contacts c left join lateral (select 1) l on true;",
-         "fix-300-verify.sql": "-- update nothing here\nselect exists (select 1 from data_quality_log);"}
-SQL31 = {"coaching-slot-melbourne.sql": "update coaching_slot set tz = 'Australia/Melbourne'; insert into data_quality_log (check_name) values ('slot');",
-         "bot-events.sql": "create trigger bot_booked after insert on csm_bookings for each row execute function f();\n"
-                           "create trigger bot_outcome after update on public.csm_call_outcomes for each row execute function f();",
+PR24 = ["data/cleanup/fix-42/2026-10-16-backfill-32-rollback.sql", "data/cleanup/fix-42/2026-10-16-buyers-without-order-60d.csv",
+        "data/cleanup/fix-42/fix-42-check.sql", "data/cleanup/fix-42/fix-42-merge.sql",
+        "data/cleanup/fix-42/fix-42-nightly-orders-rollback.sql", "data/cleanup/fix-42/fix-42-nightly-orders.sql",
+        "data/cleanup/fix-42/fix-42-rollback.sql", "data/cleanup/fix-42/fix-42-rule.sql",
+        "data/cleanup/fix-42/fix-42-test.mjs", "data/cleanup/fix-42/fix-42-verify.sql"]
+PR31 = ["apps/bot/agent/agent.py", "apps/bot/agent/knowledge.md", "apps/bot/agent/rag.py", "apps/bot/agent/server.py",
+        "apps/bot/agent/sql/class-slot-tz.sql", "apps/bot/agent/sql/bot-events.sql", "apps/bot/agent/sql/bot-knowledge.sql",
+        "apps/bot/agent/sql/bot-messages-failed.sql", "apps/bot/agent/sql/bot-switch-on-order.sql",
+        "apps/bot/agent/sql/bot-templates.sql", "apps/bot/agent/tools.py", "apps/bot/prompt.md"]
+SQL24 = {"2026-10-16-backfill-32-rollback.sql": "update orders set rep = null where id in (select id from fix42_before);",
+         "fix-42-check.sql": "select count(*) from invoices p join orders b on b.id = p.order_id;",
+         "fix-42-merge.sql": "with x as (select 1 as id) update orders b set customer_id = x.id from x;",
+         "fix-42-nightly-orders-rollback.sql": "delete from orders where source = 'nightly';",
+         "fix-42-nightly-orders.sql": "insert into orders (id) select id from buyers; update public.orders set x = 1 where false;\n"
+                                          "insert into audit_log (check_name) values ('nightly');",
+         "fix-42-rollback.sql": "delete from audit_log where check_name = 'fix-42'; update customers set a = 1; delete from customer_ids;\n"
+                                 "update visit_notes set b = 2; delete from match_queue; update orders set c = 3;",
+         "fix-42-rule.sql": "select * from leads c left join lateral (select 1) l on true;",
+         "fix-42-verify.sql": "-- update nothing here\nselect exists (select 1 from audit_log);"}
+SQL31 = {"class-slot-tz.sql": "update class_slot set tz = 'Europe/London'; insert into audit_log (check_name) values ('slot');",
+         "bot-events.sql": "create trigger bot_booked after insert on crm_orders for each row execute function f();\n"
+                           "create trigger bot_outcome after update on public.crm_visit_notes for each row execute function f();",
          "bot-knowledge.sql": "create table if not exists bot_knowledge (id int); create temp table _k as select 1;",
          "bot-messages-failed.sql": "alter table bot_messages add column kind text;\n"
                                     "insert into bot_messages (id) values (1) on conflict (id) do update set kind = excluded.kind;",
-         "bot-switch-on-booking.sql": "create or replace trigger bot_switch after insert on csm_bookings for each row execute function g();",
-         "bot-templates.sql": "update bot_templates set body = 'Hi -- update bookings set x';"}
+         "bot-switch-on-order.sql": "create or replace trigger bot_switch after insert on crm_orders for each row execute function g();",
+         "bot-templates.sql": "update bot_templates set body = 'Hi -- update orders set x';"}
 
 
 def clash_false_alarm():
-    want24 = ["public.bookings", "public.call_outcomes", "public.data_quality_log", "public.identity_match_queue",
-              "public.person_identifiers", "public.persons"]
-    want31 = ["public.bot_knowledge", "public.bot_messages", "public.bot_templates", "public.coaching_slot",
-              "public.csm_bookings", "public.csm_call_outcomes"]
+    want24 = ["public.audit_log", "public.customer_ids", "public.customers", "public.match_queue", "public.orders", "public.visit_notes"]
+    want31 = ["public.bot_knowledge", "public.bot_messages", "public.bot_templates", "public.class_slot", "public.crm_orders", "public.crm_visit_notes"]
     assert sorted({t for q in SQL24.values() for t in runner.changed_tables(q)}) == want24
     assert sorted({t for q in SQL31.values() for t in runner.changed_tables(q)}) == want31  # inserts, temp tables, `do update set`, strings: not changes
     pr = lambda n, files, when: {"number": n, "title": f"PR {n}", "url": f"https://github.com/o/ops/pull/{n}", "headRefOid": f"{n}" * 20,
@@ -245,7 +243,7 @@ def clash_false_alarm():
         if cmd[:3] == ["gh", "api", "-H"]:
             return 0, contents.get(cmd[4].split("?")[0].rsplit("/", 1)[1], "")
         return 0, "1"
-    cfg = {**CFG, "clash": {"default": CLASH["default"], "repos": {"o/ops": {"live messaging": ["setting/bot/agent/*"]}}}}
+    cfg = {**CFG, "clash": {"default": CLASH["default"], "repos": {"o/ops": {"live messaging": ["apps/bot/agent/*"]}}}}
     st, pings = {}, []
     real = runner.notify
     runner.notify = lambda msg, title=None: pings.append(msg)
@@ -399,17 +397,17 @@ def janitor():
     class Lin:
         def board(self, cfg):
             calls.append("board")
-            return {"projects": [{"id": "p1", "name": "Setter fixes", "issues": [{"id": "CXJ-1", "status": "Backlog"},
+            return {"projects": [{"id": "p1", "name": "Checkout fixes", "issues": [{"id": "CXJ-1", "status": "Backlog"},
                                                                                 {"id": "CXJ-9", "status": "Duplicate"}]},
-                                 {"id": "p2", "name": "Setter v2", "issues": [{"id": "CXJ-2", "status": "Todo"}]}],
+                                 {"id": "p2", "name": "Checkout v2", "issues": [{"id": "CXJ-2", "status": "Todo"}]}],
                     "no_project": [{"id": "CXJ-3", "status": "Backlog"}]}
         def move(self, ident, pid): calls.append(("move", ident, pid))
         def relate(self, a, b): calls.append(("relate", a, b))
         def comment(self, ident, body): calls.append(("comment", ident, body))
-    acts = [{"do": "move", "issue": "CXJ-3", "to": "Setter v2", "why": "it is a v2 step"},
+    acts = [{"do": "move", "issue": "CXJ-3", "to": "Checkout v2", "why": "it is a v2 step"},
             {"do": "move", "issue": "CXJ-1", "to": "Nowhere", "why": "no such project"},
             {"do": "link", "issues": ["CXJ-2", "CXJ-1"], "why": "same bug"},
-            {"do": "merge", "projects": ["Setter fixes", "Setter v2"], "into": "Setter v2", "why": "same outcome"},
+            {"do": "merge", "projects": ["Checkout fixes", "Checkout v2"], "into": "Checkout v2", "why": "same outcome"},
             {"do": "duplicate", "issue": "CXJ-1", "of": "CXJ-2", "why": "same words"}]
     seen = []
     judge = lambda cfg, b: seen.append(b) or acts
@@ -421,7 +419,7 @@ def janitor():
     assert [c for c in calls if c != "board" and c[0] != "comment"] == [("move", "CXJ-3", "p2"), ("relate", "CXJ-1", "CXJ-2")], calls
     assert [c[1] for c in calls if c[0] == "comment"] == ["CXJ-3", "CXJ-1", "CXJ-2"] and "[Janitor] moved" in calls[2][2], calls
     assert all(i["status"] != "Duplicate" for p in seen[0]["projects"] for i in p["issues"])  # closed issues never shown
-    assert st["janitor"]["proposals"] == ['merge project "Setter fixes" into "Setter v2": same outcome',
+    assert st["janitor"]["proposals"] == ['merge project "Checkout fixes" into "Checkout v2": same outcome',
                                           "CXJ-1 duplicates CXJ-2 (mark it Duplicate): same words"], st["janitor"]
     calls.clear()
     runner.janitor(on, st, False, judge, Lin())
@@ -435,7 +433,7 @@ def janitor():
     assert calls == ["board"] and len(seen) == 2, calls  # the same moves are never made twice (an undo by hand sticks)
     text = digest.build(CFG, st, {"shipped": {"nodes": []}, "projects": {"nodes": []}, "awaiting": {"nodes": []},
                                   "blocked": {"nodes": []}, "week": {"nodes": []}})
-    assert 'merge project "Setter fixes"' in text, text
+    assert 'merge project "Checkout fixes"' in text, text
     import importlib.util  # the replay eval's scoring: expected must all be there, anything else must be allowed
     spec = importlib.util.spec_from_file_location("janitor_eval", HERE.parent / "evals/janitor/run.py")
     ev = importlib.util.module_from_spec(spec)
@@ -447,8 +445,8 @@ def janitor():
     assert ev.score({"expect": [], "allow": []}, [])[0]
     import agents  # majority vote: kept only when most runs agree, whatever each run's why says
     runs = iter([[acts[0], acts[2]], [{**acts[0], "why": "other words"}], [acts[3]]])
-    assert [agents.key(a) for a in agents.judge(CFG, {}, 3, lambda c, b: next(runs))] == [("move", "CXJ-3", "Setter v2")]
-    out = {"do": "move", "issue": "CXJ-1", "to": "Setter v2", "why": "x"}  # out of a project it also wants merged: dropped
+    assert [agents.key(a) for a in agents.judge(CFG, {}, 3, lambda c, b: next(runs))] == [("move", "CXJ-3", "Checkout v2")]
+    out = {"do": "move", "issue": "CXJ-1", "to": "Checkout v2", "why": "x"}  # out of a project it also wants merged: dropped
     b = Lin().board(CFG)
     assert [agents.key(a) for a in agents.judge(CFG, b, 1, lambda c, b: [out, acts[3], acts[0]])] == [agents.key(acts[3]), agents.key(acts[0])]
 
