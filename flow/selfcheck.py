@@ -287,6 +287,61 @@ def daily():
         assert want in text, (want, text)
 
 
+def janitor():
+    """off = no board read, no model call; only reversible moves are made, merges/duplicates are proposals; never twice"""
+    calls = []
+
+    class Lin:
+        def board(self, cfg):
+            calls.append("board")
+            return {"projects": [{"id": "p1", "name": "Setter fixes", "issues": [{"id": "CXJ-1", "status": "Backlog"},
+                                                                                {"id": "CXJ-9", "status": "Duplicate"}]},
+                                 {"id": "p2", "name": "Setter v2", "issues": [{"id": "CXJ-2", "status": "Todo"}]}],
+                    "no_project": [{"id": "CXJ-3", "status": "Backlog"}]}
+        def move(self, ident, pid): calls.append(("move", ident, pid))
+        def relate(self, a, b): calls.append(("relate", a, b))
+        def comment(self, ident, body): calls.append(("comment", ident, body))
+    acts = [{"do": "move", "issue": "CXJ-3", "to": "Setter v2", "why": "it is a v2 step"},
+            {"do": "move", "issue": "CXJ-1", "to": "Nowhere", "why": "no such project"},
+            {"do": "link", "issues": ["CXJ-2", "CXJ-1"], "why": "same bug"},
+            {"do": "merge", "projects": ["Setter fixes", "Setter v2"], "into": "Setter v2", "why": "same outcome"},
+            {"do": "duplicate", "issue": "CXJ-1", "of": "CXJ-2", "why": "same words"}]
+    seen = []
+    judge = lambda cfg, b: seen.append(b) or acts
+    st, on = {}, {**CFG, "janitor": True, "tracker": {**CFG["tracker"], "terminal_states": ["Done", "Canceled", "Duplicate"]}}
+    for cfg in ({**CFG}, {**CFG, "janitor": False}, {**CFG, "janitor": "off"}):
+        runner.janitor(cfg, st, False, judge, Lin())
+    assert calls == [] and seen == [], calls  # off by default
+    runner.janitor(on, st, False, judge, Lin())
+    assert [c for c in calls if c != "board" and c[0] != "comment"] == [("move", "CXJ-3", "p2"), ("relate", "CXJ-1", "CXJ-2")], calls
+    assert [c[1] for c in calls if c[0] == "comment"] == ["CXJ-3", "CXJ-1", "CXJ-2"] and "[Janitor] moved" in calls[2][2], calls
+    assert all(i["status"] != "Duplicate" for p in seen[0]["projects"] for i in p["issues"])  # closed issues never shown
+    assert st["janitor"]["proposals"] == ['merge project "Setter fixes" into "Setter v2": same outcome',
+                                          "CXJ-1 duplicates CXJ-2 (mark it Duplicate): same words"], st["janitor"]
+    calls.clear()
+    runner.janitor(on, st, False, judge, Lin())
+    assert calls == [] and len(seen) == 1  # once a day
+    st["last_janitor"] = 0
+    runner.janitor(on, st, False, judge, Lin())
+    assert calls == ["board"] and len(seen) == 1  # board unchanged: no model call
+    st["last_janitor"], st["janitor"]["key"] = 0, "changed"
+    calls.clear()
+    runner.janitor(on, st, False, judge, Lin())
+    assert calls == ["board"] and len(seen) == 2, calls  # the same moves are never made twice (an undo by hand sticks)
+    text = digest.build(CFG, st, {"shipped": {"nodes": []}, "projects": {"nodes": []}, "awaiting": {"nodes": []},
+                                  "blocked": {"nodes": []}, "week": {"nodes": []}})
+    assert 'merge project "Setter fixes"' in text, text
+    import importlib.util  # the replay eval's scoring: expected must all be there, anything else must be allowed
+    spec = importlib.util.spec_from_file_location("janitor_eval", HERE.parent / "evals/janitor/run.py")
+    ev = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(ev)
+    case = {"expect": [{"do": "move", "issue": "A", "to": "P"}], "allow": [{"do": "link"}, {"do": "merge", "projects": ["X", "Y"]}]}
+    assert ev.score(case, [{"do": "move", "issue": "A", "to": "P"}, {"do": "link", "issues": ["B", "C"]},
+                           {"do": "merge", "projects": ["Y", "X"]}])[0]
+    assert not ev.score(case, [])[0] and not ev.score(case, acts[:1] + [{"do": "move", "issue": "A", "to": "P"}])[0]
+    assert ev.score({"expect": [], "allow": []}, [])[0]
+
+
 def run():
     assert labelled([{"identifier": "A", "labels": ["needs-plan"]}, {"identifier": "B", "labels": ["Bug", "plan"]},
                      {"identifier": "C", "labels": []}], ["plan", "approved"]) == ["B"]
@@ -299,7 +354,7 @@ def run():
     real_log = runner.log
     runner.log = lambda msg: None  # the fakes' errors are expected; keep runner.log clean
     try:
-        for test in (golden, apply_once, isolation, linear_auth, clash, shipper, prune, sorter, daily):
+        for test in (golden, apply_once, isolation, linear_auth, clash, shipper, prune, sorter, daily, janitor):
             test()
     finally:
         runner.log = real_log

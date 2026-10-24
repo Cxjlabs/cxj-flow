@@ -32,6 +32,10 @@ models:
   builder: sonnet
   planner: opus
   triage: sonnet
+  janitor: opus
+janitor: off                       # on = once a day, when the board changed: links related issues and moves an issue to
+                                   # the right project (each with a "[Janitor]" comment), proposes project merges and
+                                   # duplicates in the daily view. Switch on after `python3 evals/janitor/run.py` passes.
 clash:                             # one "Clash check" comment kept current on every open PR in these repos
   default:                         # area: path globs, for every repo below
     database: ["*.sql", "supabase/migrations/*"]
