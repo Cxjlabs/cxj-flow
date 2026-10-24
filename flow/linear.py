@@ -138,6 +138,40 @@ def states(idents):
     return {n["identifier"]: n["state"]["name"] for n in d["issues"]["nodes"]}
 
 
+# ---------- the board, for the janitor ----------
+
+BOARD = """query($team: String!) {
+  projects(first: 60, filter: {accessibleTeams: {some: {key: {eq: $team}}}, status: {type: {nin: ["completed", "canceled"]}}}) {
+    pageInfo { hasNextPage } nodes { id name description createdAt status { name }
+      issues(first: 40, filter: {state: {type: {nin: ["completed", "canceled"]}}}) { nodes { identifier title state { name } } } } }
+  loose: issues(first: 100, filter: {team: {key: {eq: $team}}, project: {null: true}, state: {type: {nin: ["completed", "canceled"]}}}) {
+    pageInfo { hasNextPage } nodes { identifier title state { name } } }
+}"""
+
+
+def board(cfg):
+    """Every open project with its open issues, plus open issues in no project: the facts the janitor judges."""
+    d = gql(BOARD, team=cfg["tracker"]["team"])
+    issue = lambda i: {"id": i["identifier"], "title": i["title"], "status": i["state"]["name"]}
+    return {"projects": [{"id": p["id"], "name": p["name"], "status": p["status"]["name"], "created": p["createdAt"][:10],
+                          "description": (p["description"] or "")[:700], "issues": [issue(i) for i in p["issues"]["nodes"]]}
+                         for p in page(d, "projects")],
+            "no_project": [issue(i) for i in page(d, "loose")]}
+
+
+def uuid(ident):
+    return gql("query($id: String!) { issue(id: $id) { id } }", id=ident)["issue"]["id"]
+
+
+def move(ident, project_id):
+    gql("mutation($id: String!, $p: String!) { issueUpdate(id: $id, input: {projectId: $p}) { success } }", id=uuid(ident), p=project_id)
+
+
+def relate(a, b):
+    gql("""mutation($a: String!, $b: String!) { issueRelationCreate(input: {issueId: $a, relatedIssueId: $b, type: related}) {
+        success } }""", a=uuid(a), b=uuid(b))
+
+
 # ---------- the daily view ----------
 
 DAY = """query($team: String!, $since: DateTimeOrDuration!, $week: DateTimeOrDuration!) {

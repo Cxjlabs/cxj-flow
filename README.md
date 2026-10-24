@@ -6,15 +6,20 @@ CXJ Flow runs on your own Mac (or Linux box) using the Claude Code you already h
 
 ```mermaid
 flowchart TD
-  T[Todoist Inbox] -->|something new| S{Sorter}
+  T[Todoist Inbox] -->|something new| S{Sorter agent}
   S -->|action| A[Stays in Todoist for you]
   S -->|idea / build request| L[Linear Backlog: an issue, or a project when it's big]
-  L -->|you add: plan| P[Planner writes the plan + tasks]
-  P -->|you add: approved| B[Builder: branch + PR]
+  L -->|you add: plan| P[Planner agent writes the plan + tasks]
+  P -->|you add: approved| B[Builder agent: branch + PR]
   B --> R[In Review]
   B -.->|blocked| Q[One question for you]
-  R -->|you add: go| SH[Code shipper merges]
+  LIN[(linear.py reads Linear: code, no AI)] -.-> S & P & B & SH & J
+  R --> C[Clash check comment on every open PR: code]
+  R -->|you add: go, or merge it yourself| SH[Code shipper merges + closes]
+  SH -->|SQL marked -- apply| SQL[apply-sql after the merge]
   SH --> D[Done]
+  J[Janitor agent, off until its eval passes] -->|links, moves; proposes merges| L
+  D & C & J --> V[One daily view]
 ```
 
 ## Your three jobs
@@ -35,6 +40,7 @@ flowchart TD
 - Deploy, push to `main`, or touch production data, except SQL marked `-- apply` in a PR you merged, run through `apply_sql.command`
 - Message anyone, spend money, or change anyone's pay or access
 - Complete or delete your Todoist tasks
+- Let the janitor close, merge or delete anything: it only links and moves, and asks you about the rest
 - Work in repos you list under `skip_repos`
 
 Agents run with Claude Code's permission checks on. Text inside issues and web pages is treated as data, not instructions.
@@ -61,7 +67,12 @@ Stop it any time with `./setup.sh --stop`.
 ## How it works
 - `flow/runner.py` runs every 5 minutes. `flow/linear.py` reads Linear over its API (no AI call) and finds three things: tasks to build, tasks to ship and ideas to plan. An idle tick makes no model call. One failing item is logged and skipped, never the whole tick.
 - **Builders** each get their own git worktree on the task's Linear branch. They're retried with back-off if they stall, and give up after 3 tries.
-- **Gate agents** live in `flow/agents.py`: planner and Todoist sorter, one prompt each. Shipping, the clash check and the clean-up (workspaces of finished tasks, logs older than 14 days) are plain code in `runner.py`.
+- **Gate agents** live in `flow/agents.py`: planner and Todoist sorter, one prompt each. The **janitor** (off until you
+  set `janitor: on`) judges the board's structure once a day: overlapping projects, issues in the wrong project. It sees only
+  a snapshot `linear.py` read and has no tools; `runner.py` makes its reversible moves (link two issues, move an issue to
+  another project, each with a `[Janitor]` comment) and lists merges and duplicates in the daily view for your yes. Replay
+  it on real cases of your own board first: `python3 evals/janitor/run.py` (cases in `$FLOW_HOME/evals/janitor/cases.json`).
+- Shipping, the clash check and the clean-up (workspaces of finished tasks, logs older than 14 days) are plain code in `runner.py`.
 - `flow/digest.py` builds the one daily view. `python3 flow/runner.py --self-check` runs the tests.
 - Everything you'd want to change is in `WORKFLOW.md` (its YAML front matter is the config, its body is the builder's instructions) or in `context/`.
 

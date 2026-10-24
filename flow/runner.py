@@ -2,7 +2,8 @@
 """CXJ Flow runner. One tick, in this order:
 
   reconcile builders ─► apply SQL from merged PRs ─► read Linear (linear.py) ─► code shipper (`go`)
-      ─► gate agents (plan, sorter) ─► start builders ─► clash check on every open PR ─► daily prune ─► heartbeat
+      ─► gate agents (plan, sorter) ─► start builders ─► janitor (daily, if on) ─► clash check on every open PR
+      ─► daily prune ─► heartbeat
 
 Every per-item step is isolated: an error is logged, kept for the daily view, and that item is skipped.
 An idle tick makes no model call. Run every few minutes by launchd (see setup.sh). All config lives in WORKFLOW.md
@@ -568,6 +569,81 @@ def dispatch(cfg, body, state, found, dry):
             slots -= 1
 
 
+# ---------- the janitor: board structure, judged by an agent, carried out by code ----------
+
+def janitor_on(cfg):
+    v = cfg.get("janitor", False)  # YAML reads a bare on/off as true/false
+    return v is True or str(v).lower() == "on"
+
+
+def tidy(b, terminal):
+    """The janitor sees open issues only (a Duplicate-state issue is still in Linear's 'open' list)."""
+    for p in b["projects"]:
+        p["issues"] = [i for i in p["issues"] if i["status"] not in terminal]
+    b["no_project"] = [i for i in b["no_project"] if i["status"] not in terminal]
+    return b
+
+
+def janitor(cfg, state, dry, judge=None, lin=linear):
+    """Once a day, and only when the board changed: the janitor judges structure on a snapshot linear.py read.
+    Code carries out only the reversible moves (an issue to another project, a link between two issues), each with a
+    "[Janitor]" comment saying why, and never the same one twice (so undoing one by hand sticks). Merging projects and
+    marking duplicates are only proposed, in the daily view. Off unless WORKFLOW.md says `janitor: on`."""
+    if not janitor_on(cfg) or time.time() - state.get("last_janitor", 0) < 86400:
+        return
+    b = tidy(lin.board(cfg), cfg["tracker"]["terminal_states"])
+    j = state.setdefault("janitor", {})
+    key = hashlib.sha256(json.dumps(b, sort_keys=True).encode()).hexdigest()[:16]
+    if j.get("key") == key:
+        state["last_janitor"] = time.time()
+        return  # nothing on the board changed: no model call
+    if dry:
+        return log("DRY RUN would run the janitor")
+    state["last_janitor"] = time.time()  # a failed run waits for tomorrow, it doesn't rerun every tick
+    acts = (judge or agents.judge)(cfg, b)
+    projects = {p["name"]: p for p in b["projects"]}
+    where = {i["id"]: p["name"] for p in b["projects"] for i in p["issues"]}
+    where.update({i["id"]: "no project" for i in b["no_project"]})
+    done, made, proposals = j.setdefault("done", []), [], []
+    for a in acts:
+        with isolated(state, "janitor", a.get("do")):
+            why = a.get("why", "").strip()
+            if a["do"] == "move":
+                ident, to = a.get("issue"), a.get("to")
+                sig = f"move {ident} {to}"
+                if sig in done or ident not in where or to not in projects or where[ident] == to:
+                    continue
+                lin.move(ident, projects[to]["id"])
+                lin.comment(ident, f"[Janitor] moved from \"{where[ident]}\" to \"{to}\": {why}")
+                made.append(f"{ident} moved to \"{to}\": {why}")
+            elif a["do"] == "link":
+                pair = sorted(set(a.get("issues") or []))
+                sig = "link " + " ".join(pair)
+                if sig in done or len(pair) != 2 or not all(x in where for x in pair):
+                    continue
+                lin.relate(*pair)
+                for x, y in (pair, pair[::-1]):
+                    lin.comment(x, f"[Janitor] linked to {y}: {why}")
+                made.append(f"{pair[0]} ↔ {pair[1]} linked: {why}")
+            elif a["do"] == "merge":
+                ps = a.get("projects") or []
+                if len(ps) == 2 and all(p in projects for p in ps):
+                    into = a.get("into") if a.get("into") in ps else ps[1]
+                    other = ps[0] if into == ps[1] else ps[1]
+                    proposals.append(f"merge project \"{other}\" into \"{into}\": {why}")
+                continue
+            elif a["do"] == "duplicate":
+                if a.get("issue") in where and a.get("of") in where:
+                    proposals.append(f"{a['issue']} duplicates {a['of']} (mark it Duplicate): {why}")
+                continue
+            else:
+                continue
+            done.append(sig)
+            log(f"janitor: {made[-1]}")
+    del done[:-500]
+    j.update(key=key, at=time.time(), made=made, proposals=proposals)
+
+
 # ---------- housekeeping ----------
 
 def prune(cfg, state, dry, run=sh, lookup=None):
@@ -627,6 +703,8 @@ def tick(cfg, body, state, dry):
             ship(cfg, state, found["ship"], dry)
             gates(cfg, found, state, dry)
             dispatch(cfg, body, state, found, dry)
+        with isolated(state, "janitor"):
+            janitor(cfg, state, dry)
     except linear.AuthError as e:
         log(f"can't read Linear: {e}")
         if state.get("linear_ok", True):

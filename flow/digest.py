@@ -62,6 +62,9 @@ def build(cfg, state, d, now=None, sql=None):
     stuck += [f"{k} {r.get('title', '')}: the builder gave up after {r['attempt']} tries" for k, r in state.get("retries", {}).items()
               if r["due"] == float("inf")]
     section("Needs you", stuck)
+    jan = state.get("janitor") or {}
+    section("Board tidy-ups waiting for your yes (janitor; do them in Linear, or tell a session)", jan.get("proposals"))
+    section("Janitor moved (last run, each with a [Janitor] comment saying why)", jan.get("made"))
     clash = sorted(state.get("clash", {}).values(), key=lambda c: not c.get("sig"))
     section("Open PRs (clash check)", [("⚠ " if c.get("sig") else "") + c["line"] for c in clash if c.get("line")])
     day_ago, errs = now - 86400, {}
