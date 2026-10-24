@@ -302,6 +302,44 @@ def short(p):
     return f"{p['repo'].split('/')[1]}#{p['number']}"
 
 
+NAME = r'("?\w+"?(?:\s*\.\s*"?\w+"?)?)'
+CHANGES = re.compile(  # statements that change a table: two PRs changing the same one can clash; reads and inserts can't
+    r'\bupdate\s+(?:only\s+)?' + NAME + r'|\bdelete\s+from\s+(?:only\s+)?' + NAME +
+    r'|\btruncate\s+(?:table\s+)?(?:only\s+)?' + NAME + r'|\bmerge\s+into\s+' + NAME +
+    r'|\b(?:create|alter|drop)\s+(?:or\s+replace\s+)?(?:unlogged\s+)?(?:table|view|materialized\s+view)\s+'
+    r'(?:if\s+(?:not\s+)?exists\s+)?(?:only\s+)?' + NAME + r'|\b(?:before|after|instead\s+of)\s[^;]*?\bon\s+' + NAME, re.I)
+TEMP = re.compile(r'\bcreate\s+(?:local\s+|global\s+)?temp(?:orary)?\s+table\s+(?:if\s+not\s+exists\s+)?' + NAME, re.I)
+
+
+def changed_tables(sql):
+    """Tables a SQL file changes (DDL, update, delete, truncate, merge, triggers), schema-qualified. Not reads or
+    inserts: two PRs that both add a row to a log table don't clash."""
+    # ponytail: a regex, not a SQL parser; a CTE named like a real table, or dynamic SQL, can fool it
+    sql = re.sub(r"--[^\n]*|/\*.*?\*/|'(?:[^']|'')*'", " ", sql, flags=re.S)
+    norm = lambda n: (lambda x: x if "." in x else "public." + x)(re.sub(r'[\s"]', "", n).lower())
+    temp = {norm(m) for m in TEMP.findall(sql)}
+    found = {norm(next(g for g in m if g)) for m in CHANGES.findall(sql)}
+    return sorted(t for t in found - temp if t.split(".")[-1] not in {"set", "skip", "nowait", "of"})
+
+
+def raw(run, p, path):
+    """A file's text at the PR's head, or None (deleted in this PR)."""
+    rc, text = run(["gh", "api", "-H", "Accept: application/vnd.github.raw",
+                    f"repos/{p['repo']}/contents/{urllib.parse.quote(path)}?ref={p['headRefOid']}"])
+    return None if rc else text
+
+
+def pr_tables(state, p, run):
+    """Every table the PR's SQL files change, cached by head SHA."""
+    cache, out = state.setdefault("sql_tables", {}), set()
+    for path in [x for x in p["paths"] if x.endswith(".sql")]:
+        k = f"{p['url']}@{p['headRefOid'][:12]}:{path}"
+        if k not in cache:
+            cache[k] = changed_tables(raw(run, p, path) or "")
+        out |= set(cache[k])
+    return out
+
+
 def dry_runs(cfg, state, p, run):
     """apply-sql --dry-run of each `-- apply` SQL file in the PR, at its head. Cached by head + base SHA."""
     cmd = (cfg.get("apply_sql") or {}).get("command")
@@ -311,10 +349,9 @@ def dry_runs(cfg, state, p, run):
             continue
         k = f"{p['url']}@{p['headRefOid'][:12]}.{p['baseRefOid'][:12]}:{path}"
         if k not in cache:
-            rc, sql = run(["gh", "api", "-H", "Accept: application/vnd.github.raw",
-                           f"repos/{p['repo']}/contents/{urllib.parse.quote(path)}?ref={p['headRefOid']}"])
+            sql = raw(run, p, path)
             cache[k] = None  # deleted in this PR, or not marked `-- apply`: never applied, so nothing to dry-run
-            if rc == 0 and sql.lstrip().lower().startswith("-- apply"):
+            if sql is not None and sql.lstrip().lower().startswith("-- apply"):
                 LOGS.mkdir(parents=True, exist_ok=True)
                 tmp = LOGS / ("dry-" + re.sub(r"[^\w.-]", "_", k))
                 tmp.write_text(sql)
@@ -329,29 +366,32 @@ def dry_runs(cfg, state, p, run):
 def clash_body(cfg, state, p, prs, run):
     t = p["touches"]
     others, live = [], []
-    for o in prs:
+    for o in prs:  # nearby = the same files (same repo) or the same tables changed; a shared area alone is not a clash
         if o is p:
             continue
-        shared = sorted(set(o["touches"]) & set(t))
+        for q in (p, o):
+            if "tables" not in q:
+                q["tables"] = pr_tables(state, q, run)
+        tables = sorted(p["tables"] & o["tables"])
         files = sorted(set(o["paths"]) & set(p["paths"])) if o["repo"] == p["repo"] else []
-        if shared or files:
-            why = shared + ([f"same files: {', '.join(files[:3])}"] if files else [])
+        if tables or files:
+            why = ([f"same tables: {', '.join(tables[:4])}"] if tables else []) + ([f"same files: {', '.join(files[:3])}"] if files else [])
             title = f" \"{o['title'][:60]}\"" if o["repo"] == p["repo"] else ""  # another repo's title may be private
             others.append(f"{short(o)}{title} ({'; '.join(why)})")
-        if shared:
-            live.append(o["url"])
+            if o.get("createdAt", "") <= p.get("createdAt", ""):
+                live.append(o["url"])  # the newer PR of a pair reports the clash, so a pair pings once
     sql = dry_runs(cfg, state, p, run)
     ci = checks(p.get("statusCheckRollup"))
     what = "; ".join(f"{a} ({', '.join(fs[:3])}{', …' if len(fs) > 3 else ''})" for a, fs in sorted(t.items()))
     lines = [MARK, f"**Clash check** · kept current by CXJ Flow · head `{p['headRefOid'][:7]}`", "",
              f"- **Touches:** {what or 'nothing live (no database, n8n or messaging paths)'}",
-             f"- **In flight in the same area:** {'; '.join(others) or 'none'}",
+             f"- **In flight, same files or tables:** {'; '.join(others) or 'none'}",
              f"- **Checks:** {ci}"]
     for path, r in sql:
         lines += [f"- **SQL dry run** `{path}`: {'ok' if r['ok'] else 'REFUSED'}", "  ```", *("  " + l for l in r["out"].splitlines()), "  ```"]
     line = (f"{short(p)} {p['title'][:50]} — {', '.join(sorted(t)) or 'nothing live'}; "
             f"{len(others)} in flight nearby; checks {ci}" + "".join(f"; SQL {path} REFUSED" for path, r in sql if not r["ok"]))
-    sig = sorted(live) + [path for path, r in sql if not r["ok"]]  # what is worth a ping: a live-area clash, a refused dry run
+    sig = sorted(live) + [path for path, r in sql if not r["ok"]]  # what is worth a ping: a clash, a refused dry run
     return "\n".join(lines), line, sig
 
 
@@ -379,12 +419,14 @@ def clash_check(cfg, state, dry, run=sh):
         with isolated(state, "clash: list PRs", repo):
             rules = rules_for(conf, repo)
             for p in gh_json(run, ["gh", "pr", "list", "-R", repo, "--state", "open", "--limit", "50", "--json",
-                                   "number,title,url,headRefOid,baseRefOid,files,statusCheckRollup"]) or []:
+                                   "number,title,url,createdAt,headRefOid,baseRefOid,files,statusCheckRollup"]) or []:
                 p["repo"], p["paths"] = repo, [f["path"] for f in p.get("files") or []]
                 p["touches"] = touches(p["paths"], rules)
                 prs.append(p)
             listed.add(repo)
     cache = state.setdefault("clash", {})
+    # PRs already open when Flow started watching are a baseline: listed in the daily view, never pinged about
+    since = state.setdefault("clash_since", time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()))
     for p in prs:
         with isolated(state, "clash", p["url"]):
             body, line, sig = clash_body(cfg, state, p, prs, run)
@@ -396,15 +438,16 @@ def clash_check(cfg, state, dry, run=sh):
                 log(f"DRY RUN would update the clash check on {p['url']}: {line}")
                 continue
             c["id"] = put_comment(run, p, body, c.get("id"))
-            if sig and sig != c.get("sig"):
-                notify(f"Clash: {line}\n{p['url']}", "Flow: clash")
+            if set(sig) - set(c.get("sig") or []) and p.get("createdAt", "") >= since:
+                notify(f"Clash: {line}\n{p['url']}", "Flow: clash")  # only a NEW clash pings
             c.update(key=key, line=line, sig=sig, repo=p["repo"])
             cache[p["url"]] = c
     open_urls = {p["url"] for p in prs}
     for url in [u for u, c in cache.items() if c.get("repo") in listed and u not in open_urls]:
         del cache[url]  # merged or closed
-    for k in [k for k in state.get("dry_runs", {}) if k.split("@")[0] not in open_urls]:
-        del state["dry_runs"][k]
+    for name in ("dry_runs", "sql_tables"):
+        for k in [k for k in state.get(name, {}) if k.split("@")[0] not in open_urls]:
+            del state[name][k]
 
 
 # ---------- gate agents, builders ----------
