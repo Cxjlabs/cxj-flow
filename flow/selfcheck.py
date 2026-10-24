@@ -136,17 +136,19 @@ def clash():
     assert runner.checks([{"context": "vercel", "state": "FAILURE"}, {"name": "t", "conclusion": "SUCCESS"}]) == "failing: vercel"
 
     prs = {"o/ops": [{"number": 1, "title": "Fix charges", "url": "https://github.com/o/ops/pull/1", "headRefOid": "a" * 40,
-                      "baseRefOid": "b" * 40, "files": [{"path": p} for p in PR20], "statusCheckRollup": []}],
+                      "baseRefOid": "b" * 40, "files": [{"path": p} for p in PR20], "statusCheckRollup": [],
+                      "createdAt": "2000-01-01T00:00:00Z"}],  # open before Flow started watching: a quiet baseline
            "o/web-app": [{"number": 37, "title": "Closer page", "url": "https://github.com/o/web-app/pull/37",
-                                     "headRefOid": "c" * 40, "baseRefOid": "d" * 40, "files": [{"path": p} for p in PR37],
-                                     "statusCheckRollup": [{"name": "ci", "status": "COMPLETED", "conclusion": "SUCCESS"}]}]}
-    writes, existing = [], {}
+                          "headRefOid": "c" * 40, "baseRefOid": "d" * 40, "files": [{"path": p} for p in PR37],
+                          "statusCheckRollup": [{"name": "ci", "status": "COMPLETED", "conclusion": "SUCCESS"}],
+                          "createdAt": "2999-01-01T00:00:00Z"}]}  # opened after: new
+    writes, existing, sql = [], {}, {"data/cleanup/fix-42/fix-42-fix.sql": "-- apply\nupdate t set x = 1;"}
 
     def gh(cmd, cwd=None):
         if cmd[:3] == ["gh", "pr", "list"]:
             return 0, json.dumps(prs[cmd[4]])
-        if cmd[:3] == ["gh", "api", "-H"]:  # file contents: the fix is marked -- apply, the rest is not
-            return (0, "-- apply\nupdate t set x = 1;") if cmd[4].split("contents/")[1].startswith("data/cleanup/fix-42/fix-42-fix.sql") else (0, "select 1;")
+        if cmd[:3] == ["gh", "api", "-H"]:  # file contents at the head
+            return 0, sql.get(cmd[4].split("contents/")[1].split("?")[0], "select 1;")
         if cmd[0] == "apply-sql":
             return 0, "dry run, rolled back:\n  public.t: 3 rows"
         if cmd[:2] == ["gh", "api"] and "--paginate" in cmd:
@@ -162,25 +164,128 @@ def clash():
         runner.clash_check(cfg, st, False, gh)
         assert len(writes) == 2 and all("-X" not in w for w in writes), writes  # one new comment per PR
         body = writes[0][-3][5:]
-        assert body.startswith(runner.MARK) and "database" in body and "web-app#37" in body and "SQL dry run" in body, body
+        assert body.startswith(runner.MARK) and "Touches:** database" in body and "SQL dry run" in body, body
+        assert "**In flight, same files or tables:** none" in body, body  # both touch the database, but share no file or table
         assert "**Checks:** none configured" in body, body
-        assert "Closer page" not in body, body  # another repo's PR title is never copied into this one
-        assert len(pings) == 2, pings  # both PRs touch the database: one clash ping each, once
+        assert pings == [], pings
         runner.clash_check(cfg, st, False, gh)
-        assert len(writes) == 2 and len(pings) == 2, writes  # nothing changed: no GitHub write, no ping
+        assert len(writes) == 2 and pings == [], writes  # nothing changed: no GitHub write, no ping
+        # a new push to web-app#37 changes table t, which ops#1 changes too: a NEW clash, pinged once, by the newer PR
+        prs["o/web-app"][0]["headRefOid"] = "e" * 40
+        sql["supabase/migrations/20261022a_booking_channel_override.sql"] = "alter table public.t add column y int;"
+        runner.clash_check(cfg, st, False, gh)
+        assert len(pings) == 1 and "web-app#37" in pings[0], pings
+        assert "same tables: public.t" in writes[-1][-3], writes[-1]
+        runner.clash_check(cfg, st, False, gh)
+        assert len(pings) == 1, pings  # the same clash never pings twice
         prs["o/ops"][0]["statusCheckRollup"] = [{"name": "ci", "status": "COMPLETED", "conclusion": "FAILURE"}]
+        n = len(writes)
         runner.clash_check(cfg, st, False, gh)
-        assert len(writes) == 3 and writes[2][:4] == ["gh", "api", "-X", "PATCH"], writes[2]  # edited in place, not a second comment
-        assert len(pings) == 2, pings  # same clash, no new ping
+        assert len(writes) == n + 1 and writes[-1][:4] == ["gh", "api", "-X", "PATCH"], writes[-1]  # edited in place
+        assert len(pings) == 1, pings
         # state lost: the comment is found by its marker and edited, never duplicated
         existing["repos/o/ops/issues/1/comments"] = "777"
-        st2 = {}
-        runner.clash_check(cfg, st2, False, gh)
-        assert any(w[:4] == ["gh", "api", "-X", "PATCH"] and w[4].endswith("/comments/777") for w in writes[3:]), writes[3:]
-        # merged PR: its cache entry goes
+        runner.clash_check(cfg, {}, False, gh)
+        assert any(w[:4] == ["gh", "api", "-X", "PATCH"] and w[4].endswith("/comments/777") for w in writes[n + 1:]), writes[n + 1:]
+        # merged PR: its cache entries go
         prs["o/ops"] = []
         runner.clash_check(cfg, st, False, gh)
         assert list(st["clash"]) == ["https://github.com/o/web-app/pull/37"], st["clash"]
+        assert all(k.startswith("https://github.com/o/web-app/") for k in st["sql_tables"]), st["sql_tables"]
+    finally:
+        runner.notify = real
+
+
+# The real false alarm of 24 Oct: two open PRs that both carry .sql files but share no file and change no common table.
+# File lists exact (names of people/projects swapped); SQL cut down to statements with the same changed tables.
+PR24 = ["data/ops/db-cleanup/fix-300/2026-10-16-backfill-32-rollback.sql", "data/ops/db-cleanup/fix-300/2026-10-16-payers-without-booking-60d.csv",
+        "data/ops/db-cleanup/fix-300/fix-300-check.sql", "data/ops/db-cleanup/fix-300/fix-300-merge.sql",
+        "data/ops/db-cleanup/fix-300/fix-300-nightly-bookings-rollback.sql", "data/ops/db-cleanup/fix-300/fix-300-nightly-bookings.sql",
+        "data/ops/db-cleanup/fix-300/fix-300-rollback.sql", "data/ops/db-cleanup/fix-300/fix-300-rule.sql",
+        "data/ops/db-cleanup/fix-300/fix-300-test.mjs", "data/ops/db-cleanup/fix-300/fix-300-verify.sql"]
+PR31 = ["setting/bot/agent/agent.py", "setting/bot/agent/knowledge.md", "setting/bot/agent/rag.py", "setting/bot/agent/server.py",
+        "setting/bot/agent/sql/coaching-slot-melbourne.sql", "setting/bot/agent/sql/bot-events.sql", "setting/bot/agent/sql/bot-knowledge.sql",
+        "setting/bot/agent/sql/bot-messages-failed.sql", "setting/bot/agent/sql/bot-switch-on-booking.sql",
+        "setting/bot/agent/sql/bot-templates.sql", "setting/bot/agent/tools.py", "setting/bot/prompt.md"]
+SQL24 = {"2026-10-16-backfill-32-rollback.sql": "update bookings set setter = null where id in (select id from fix300_before);",
+         "fix-300-check.sql": "select count(*) from payments p join bookings b on b.id = p.booking_id;",
+         "fix-300-merge.sql": "with x as (select 1 as id) update bookings b set person_id = x.id from x;",
+         "fix-300-nightly-bookings-rollback.sql": "delete from bookings where source = 'nightly';",
+         "fix-300-nightly-bookings.sql": "insert into bookings (id) select id from payers; update public.bookings set x = 1 where false;\n"
+                                          "insert into data_quality_log (check_name) values ('nightly');",
+         "fix-300-rollback.sql": "delete from data_quality_log where check_name = 'fix-300'; update persons set a = 1; delete from person_identifiers;\n"
+                                 "update call_outcomes set b = 2; delete from identity_match_queue; update bookings set c = 3;",
+         "fix-300-rule.sql": "select * from contacts c left join lateral (select 1) l on true;",
+         "fix-300-verify.sql": "-- update nothing here\nselect exists (select 1 from data_quality_log);"}
+SQL31 = {"coaching-slot-melbourne.sql": "update coaching_slot set tz = 'Australia/Melbourne'; insert into data_quality_log (check_name) values ('slot');",
+         "bot-events.sql": "create trigger bot_booked after insert on csm_bookings for each row execute function f();\n"
+                           "create trigger bot_outcome after update on public.csm_call_outcomes for each row execute function f();",
+         "bot-knowledge.sql": "create table if not exists bot_knowledge (id int); create temp table _k as select 1;",
+         "bot-messages-failed.sql": "alter table bot_messages add column kind text;\n"
+                                    "insert into bot_messages (id) values (1) on conflict (id) do update set kind = excluded.kind;",
+         "bot-switch-on-booking.sql": "create or replace trigger bot_switch after insert on csm_bookings for each row execute function g();",
+         "bot-templates.sql": "update bot_templates set body = 'Hi -- update bookings set x';"}
+
+
+def clash_false_alarm():
+    want24 = ["public.bookings", "public.call_outcomes", "public.data_quality_log", "public.identity_match_queue",
+              "public.person_identifiers", "public.persons"]
+    want31 = ["public.bot_knowledge", "public.bot_messages", "public.bot_templates", "public.coaching_slot",
+              "public.csm_bookings", "public.csm_call_outcomes"]
+    assert sorted({t for q in SQL24.values() for t in runner.changed_tables(q)}) == want24
+    assert sorted({t for q in SQL31.values() for t in runner.changed_tables(q)}) == want31  # inserts, temp tables, `do update set`, strings: not changes
+    pr = lambda n, files, when: {"number": n, "title": f"PR {n}", "url": f"https://github.com/o/ops/pull/{n}", "headRefOid": f"{n}" * 20,
+                                 "baseRefOid": "b" * 40, "files": [{"path": f} for f in files], "statusCheckRollup": [], "createdAt": when}
+    prs = [pr(24, PR24, "2999-01-01T00:00:00Z"), pr(31, PR31, "2999-01-02T00:00:00Z")]  # both new, so only the rule can keep them quiet
+    contents = {**SQL24, **SQL31}
+
+    def gh(cmd, cwd=None):
+        if cmd[:3] == ["gh", "pr", "list"]:
+            return 0, json.dumps(prs)
+        if cmd[:3] == ["gh", "api", "-H"]:
+            return 0, contents.get(cmd[4].split("?")[0].rsplit("/", 1)[1], "")
+        return 0, "1"
+    cfg = {**CFG, "clash": {"default": CLASH["default"], "repos": {"o/ops": {"live messaging": ["setting/bot/agent/*"]}}}}
+    st, pings = {}, []
+    real = runner.notify
+    runner.notify = lambda msg, title=None: pings.append(msg)
+    try:
+        runner.clash_check(cfg, st, False, gh)
+    finally:
+        runner.notify = real
+    lines = sorted(c["line"] for c in st["clash"].values())
+    assert pings == [] and all("0 in flight nearby" in l for l in lines), (pings, lines)
+    assert "database, live messaging" in lines[1] and "— database;" in lines[0], lines  # the Touches lines are unchanged
+
+
+def clash_pings():
+    """A, B open before Flow watched; C and D new. All change table t. Pings: C once, D once; never A or B; never again."""
+    mk = lambda n, when, head="h": {"number": n, "title": f"PR {n}", "url": f"https://github.com/o/ops/pull/{n}", "headRefOid": head * 40,
+                                    "baseRefOid": "b" * 40, "files": [{"path": f"m{n}.sql"}], "statusCheckRollup": [], "createdAt": when}
+    prs = [mk(1, "2000-01-01T00:00:00Z"), mk(2, "2001-01-01T00:00:00Z")]
+
+    def gh(cmd, cwd=None):
+        if cmd[:3] == ["gh", "pr", "list"]:
+            return 0, json.dumps(prs)
+        if cmd[:3] == ["gh", "api", "-H"]:
+            return 0, "update t set x = 1;"
+        return 0, "1"
+    cfg = {**CFG, "clash": {"default": CLASH["default"], "repos": {"o/ops": {}}}}
+    st, pings = {}, []
+    real = runner.notify
+    runner.notify = lambda msg, title=None: pings.append(msg.split("\n")[1])
+    try:
+        runner.clash_check(cfg, st, False, gh)
+        assert pings == [], pings  # A and B clash, but both were open already: a quiet baseline
+        prs.append(mk(3, "2999-01-01T00:00:00Z"))
+        runner.clash_check(cfg, st, False, gh)
+        assert pings == ["https://github.com/o/ops/pull/3"], pings
+        prs.append(mk(4, "3000-01-01T00:00:00Z"))
+        runner.clash_check(cfg, st, False, gh)
+        assert pings == ["https://github.com/o/ops/pull/3", "https://github.com/o/ops/pull/4"], pings  # C doesn't ping again for D
+        prs[2] = {**mk(3, "2999-01-01T00:00:00Z", head="n"), "statusCheckRollup": [{"name": "ci", "conclusion": "FAILURE"}]}
+        runner.clash_check(cfg, st, False, gh)
+        assert len(pings) == 2, pings  # a new push and red CI change the comment, but it is the same clash: no ping
     finally:
         runner.notify = real
 
@@ -360,7 +465,8 @@ def run():
     real_log = runner.log
     runner.log = lambda msg: None  # the fakes' errors are expected; keep runner.log clean
     try:
-        for test in (golden, apply_once, isolation, linear_auth, clash, shipper, prune, sorter, daily, janitor):
+        for test in (golden, apply_once, isolation, linear_auth, clash, clash_false_alarm, clash_pings, shipper, prune, sorter,
+                     daily, janitor):
             test()
     finally:
         runner.log = real_log
