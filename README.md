@@ -95,7 +95,7 @@ Fewer fences, but real ones where a mistake can't be undone.
 ## Working alongside your own Claude Code sessions
 Most days you'll also work in interactive sessions. Keep them on the same lifecycle so Linear stays true:
 - **Connect Linear's GitHub integration,** and turn on *Link commits to issues* (it needs a push webhook per repo or
-  per org). Then a merged PR, or a commit saying `Fixes ABC-123`, closes its issue without anyone remembering to.
+  per org). Then a merged PR, or a commit saying `Fixes ENG-123`, closes its issue without anyone remembering to.
 - **Work by project, not by side quest.** Give a session a project and have it work through that project's issues.
   Anything it notices that isn't in the plan goes on a "found" list, not into the code. At the end you pick what
   becomes a Linear issue. Unchecked additions are how a board floods.
