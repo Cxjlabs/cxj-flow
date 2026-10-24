@@ -9,7 +9,8 @@ Config + builder prompt: `WORKFLOW.md`. Company knowledge: `context/`. Code: `fl
 | "set me up" / first run / `TODO:` left in `context/` | the interview below | `./setup.sh` |
 | Change what agents may do | `WORKFLOW.md` (front matter + hard rules) | `python3 flow/runner.py --dry-run` |
 | Change a gate agent (plan / ship / triage) | `flow/agents.py` | — |
-| Change the morning digest | `flow/digest.py` | `python3 flow/digest.py` |
+| Change the daily view | `flow/digest.py` | `python3 flow/digest.py --print` |
+| Change how Linear is read or written | `flow/linear.py` | `python3 flow/runner.py --self-check` |
 | Why something happened | `logs/runner.log`, `logs/<id>-*.log` | — |
 | Past mistakes | `LESSONS.md` — append new ones | — |
 
@@ -26,7 +27,10 @@ When the user says "set me up", or `WORKFLOW.md` has `team: ""`, or `context/COM
 ## Rules
 - Never weaken the hard rules in `WORKFLOW.md` (no merge without `go`, no deploys, data only through apply-sql, no messages, no spending).
 - Facts are code, judgement is an agent: anything a script can read exactly (Linear state, PRs, checks, merged SQL)
-  is plain code in `runner.py`; agents in `agents.py` only plan, build and sort. Secrets (a Linear API key, from W2)
-  are read from the macOS Keychain at run time, never written into this repo.
+  is plain code in `runner.py` / `linear.py`; agents in `agents.py` only plan, build and sort. Secrets (the Linear and Todoist
+  API keys) are read from the macOS Keychain at run time, never written into this repo.
+- Every per-item step of a tick runs inside `isolated(...)`: an error is logged, listed in the daily view, and skipped.
+- Pings: only clash, outage, failed apply and the daily view. Anything else waits for the daily view.
+- Every change keeps `python3 flow/runner.py --self-check` green; new behaviour adds a case in `flow/selfcheck.py`.
 - Keep it small: a new feature is a few lines in an existing file or a WORKFLOW.md setting before it is a new file.
   SQL from merged PRs is applied only when WORKFLOW.md sets `apply_sql.command` (ABC: `~/.claude/bin/apply-sql`).

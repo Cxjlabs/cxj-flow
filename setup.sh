@@ -20,7 +20,8 @@ fi
 command -v claude >/dev/null || { echo "STOP: install Claude Code first: https://claude.com/claude-code"; exit 1; }
 gh auth status >/dev/null 2>&1 || { echo "STOP: GitHub CLI not logged in. Run: gh auth login"; exit 1; }
 python3 -c "import yaml" 2>/dev/null || python3 -m pip install -q --user pyyaml
-echo "1/5 tools ok (claude, gh, python yaml)"
+security find-generic-password -s linear-api-key -a cxj-flow -w >/dev/null 2>&1 || { echo "STOP: no Linear API key in the Keychain. Make one in Linear (Settings → Security & access) and run: security add-generic-password -s linear-api-key -a cxj-flow -w"; exit 1; }
+echo "1/5 tools ok (claude, gh, python yaml, Linear key)"
 
 cfg() { python3 -c "import yaml,sys; d=yaml.safe_load(open('WORKFLOW.md').read().split('---')[1]); print(eval('d'+sys.argv[1]) or '')" "$1"; }
 TEAM=$(cfg "['tracker']['team']")
@@ -43,7 +44,7 @@ if [ "$(uname)" != "Darwin" ]; then
   MIN=$(cfg "['polling']['interval_minutes']"); T=$(cfg "['digest']['time']")
   echo "5/5 not a Mac — add these to 'crontab -e':"
   echo "*/$MIN * * * * FLOW_HOME=$CONF python3 $FLOW/flow/runner.py >> $CONF/logs/cron.log 2>&1"
-  [ -n "$TODOIST" ] && echo "${T#*:} ${T%%:*} * * * FLOW_HOME=$CONF python3 $FLOW/flow/digest.py >> $CONF/logs/cron.log 2>&1"
+  echo "${T#*:} ${T%%:*} * * * FLOW_HOME=$CONF python3 $FLOW/flow/digest.py >> $CONF/logs/cron.log 2>&1"
   exit 0
 fi
 
@@ -67,7 +68,7 @@ EOF
   launchctl bootstrap "gui/$(id -u)" ~/Library/LaunchAgents/$1.plist
 }
 plist $LABEL runner.py "<key>StartInterval</key><integer>$SECS</integer>"
-[ -n "$TODOIST" ] && plist $LABEL-digest digest.py \
+plist $LABEL-digest digest.py \
   "<key>StartCalendarInterval</key><dict><key>Hour</key><integer>$H</integer><key>Minute</key><integer>$M</integer></dict>"
-echo "5/5 CXJ Flow is on — checks Linear every $((SECS/60)) min$( [ -n "$TODOIST" ] && echo ", digest at $T"). Log: logs/runner.log"
+echo "5/5 CXJ Flow is on — checks Linear every $((SECS/60)) min, daily view at $T. Log: logs/runner.log"
 echo "Stop any time: ./setup.sh --stop"

@@ -8,6 +8,7 @@ tracker:
   handoff_state: In Review         # ...and leaves them here with a PR
   terminal_states: [Done, Canceled, Duplicate]
   excluded_title_prefixes: ["You:"]   # tasks only a person can do
+  comment_prefix: ""               # put in front of every Linear comment Flow writes, e.g. "[Work Mac] "
 labels:                            # Linear labels CXJ Flow uses (setup creates them)
   build: agent                     # approved for an agent to build
   plan: plan                       # you: "plan it" (on a project, or on a single issue)
@@ -16,7 +17,7 @@ labels:                            # Linear labels CXJ Flow uses (setup creates 
   idea: Idea                       # parked idea (never built itself)
   triage: Triage                   # build request waiting for "plan it"
   decision: Decision               # needs a person first
-tools:                             # MCP tool prefixes, as Claude Code names them
+tools:                             # MCP tool prefixes for the planner and sorter agents, as Claude Code names them
   linear: mcp__claude_ai_Linear    # claude.ai Linear connector
   todoist: mcp__claude_ai_Todoist  # claude.ai Todoist connector ("" = no Todoist)
 repos:                             # GitHub repo name -> local checkout path
@@ -24,16 +25,22 @@ repos:                             # GitHub repo name -> local checkout path
 skip_repos: []                     # repos agents must never build or merge in
 todoist:
   done_label: in-linear            # added to Todoist tasks once they're in Linear
-  triage_every_minutes: 60
+  triage_every_minutes: 15         # the sorter runs at most this often, and only when the Inbox has an unsorted task
 digest:
-  time: "07:00"                    # local time, one Todoist task listing what needs you
+  time: "07:00"                    # local time of the one daily view (sent through notify.sh)
 models:
-  dispatcher: haiku
   builder: sonnet
   planner: opus
-  shipper: sonnet
   triage: sonnet
-  digest: sonnet
+clash:                             # one "Clash check" comment kept current on every open PR in these repos
+  default:                         # area: path globs, for every repo below
+    database: ["*.sql", "supabase/migrations/*"]
+    n8n: ["*n8n*"]
+  repos: {}                        # owner/name: {area: [globs]} added for that repo, e.g. {"live messaging": ["src/send/*"]}
+# apply_sql:                       # after you merge a PR, its `-- apply` SQL files run through this, once
+#   command: ~/.claude/bin/apply-sql
+# heartbeat:                       # each tick POSTs {linear_ok, ...} here; a watcher elsewhere pings once if they stop
+#   url: https://your-n8n/webhook/flow-heartbeat-<random>
 agent:
   max_concurrent: 2
   stall_minutes: 30                # no output this long = stalled, killed, retried
