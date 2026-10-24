@@ -340,6 +340,12 @@ def janitor():
                            {"do": "merge", "projects": ["Y", "X"]}])[0]
     assert not ev.score(case, [])[0] and not ev.score(case, acts[:1] + [{"do": "move", "issue": "A", "to": "P"}])[0]
     assert ev.score({"expect": [], "allow": []}, [])[0]
+    import agents  # majority vote: kept only when most runs agree, whatever each run's why says
+    runs = iter([[acts[0], acts[2]], [{**acts[0], "why": "other words"}], [acts[3]]])
+    assert [agents.key(a) for a in agents.judge(CFG, {}, 3, lambda c, b: next(runs))] == [("move", "CXJ-3", "Setter v2")]
+    out = {"do": "move", "issue": "CXJ-1", "to": "Setter v2", "why": "x"}  # out of a project it also wants merged: dropped
+    b = Lin().board(CFG)
+    assert [agents.key(a) for a in agents.judge(CFG, b, 1, lambda c, b: [out, acts[3], acts[0]])] == [agents.key(acts[3]), agents.key(acts[0])]
 
 
 def run():

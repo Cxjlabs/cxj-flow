@@ -15,14 +15,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "flow"))
 import agents, runner
 
 
-def key(a):
-    if a.get("do") == "move":
-        return ("move", a.get("issue"), a.get("to"))
-    if a.get("do") == "link":
-        return ("link", *sorted(a.get("issues") or []))
-    if a.get("do") == "merge":
-        return ("merge", *sorted(a.get("projects") or []))
-    return ("duplicate", a.get("issue"), a.get("of"))
+key = agents.key
 
 
 def score(case, got):
@@ -47,7 +40,7 @@ def main():
     cfg, _ = runner.load_workflow()
     terminal = cfg["tracker"]["terminal_states"]
     jobs = [(c, r) for c in cases for r in range(runs)]
-    with ThreadPoolExecutor(5) as pool:
+    with ThreadPoolExecutor(4) as pool:  # each judge() runs 3 votes in parallel too
         answers = list(pool.map(lambda j: agents.judge(cfg, runner.tidy(json.loads(json.dumps(j[0]["board"])), terminal)), jobs))
     failed = 0
     for (c, r), got in zip(jobs, answers):
