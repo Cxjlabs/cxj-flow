@@ -24,6 +24,9 @@ When the user says "set me up", or `WORKFLOW.md` has `team: ""`, or `context/COM
 5. Tell them to run `./setup.sh` in a normal Terminal window (not over SSH).
 
 ## Rules
-- Never weaken the hard rules in `WORKFLOW.md` (no merge without `go`, no deploys, no production data, no messages, no spending).
-- Linear and Todoist are reached only through Claude Code's own connectors; never add API keys to this repo.
-- Keep it small: three Python files and one shell script. New feature → ask whether a prompt change does it first.
+- Never weaken the hard rules in `WORKFLOW.md` (no merge without `go`, no deploys, data only through apply-sql, no messages, no spending).
+- Facts are code, judgement is an agent: anything a script can read exactly (Linear state, PRs, checks, merged SQL)
+  is plain code in `runner.py`; agents in `agents.py` only plan, build and sort. Secrets (a Linear API key, from W2)
+  are read from the macOS Keychain at run time, never written into this repo.
+- Keep it small: a new feature is a few lines in an existing file or a WORKFLOW.md setting before it is a new file.
+  SQL from merged PRs is applied only when WORKFLOW.md sets `apply_sql.command` (ABC: `~/.claude/bin/apply-sql`).

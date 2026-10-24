@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""CXJ Flow runner. One tick: reconcile running builders, start gate agents, dispatch new builds.
+"""CXJ Flow runner. One tick: reconcile running builders, apply SQL from merged PRs, start gate agents, dispatch builds.
 
 Run every few minutes by launchd (see setup.sh). All config lives in WORKFLOW.md (in this repo, or in $FLOW_HOME).
 Linear is read through Claude Code's own Linear connection (no API key): a small `claude -p` call lists work.
@@ -161,6 +161,82 @@ def reconcile(cfg, state):
             log(f"{ident}: exited without finishing, retry in {backoff}s")
 
 
+def sh(cmd, cwd=None):
+    out = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, timeout=600)
+    return out.returncode, (out.stdout + out.stderr).strip()
+
+
+def linear_comment(cfg, ident, text):
+    """One small model call with only the Linear tools: Flow has no Linear key yet (W2 adds one)."""
+    sh(["claude", "-p", f"Add this comment to Linear issue {ident}, exactly as written, and do nothing else:\n\n{text}",
+        "--model", cfg["models"]["dispatcher"], "--permission-mode", "dontAsk", "--allowedTools", cfg["tools"]["linear"]])
+
+
+def apply_merged(cfg, state, dry, run=sh, save=None):
+    """After the owner merges a PR, apply its SQL files whose first line is `-- apply`, through apply-sql.
+
+    The merge is the yes for the database change too. Each (PR, file) is applied at most once: it is marked in
+    state.json before apply-sql runs, and apply-sql --once refuses a source it already applied. The outcome is
+    commented on the PR and on the Linear issue named in the PR. Off unless WORKFLOW.md has `apply_sql.command`.
+    """
+    conf = cfg.get("apply_sql") or {}
+    if not conf.get("command"):
+        return
+    since = state.setdefault("apply_since", time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()))  # never apply older merges
+    done = state.setdefault("applied", {})
+    save = save or (lambda: STATE.write_text(json.dumps(state, indent=1)))
+    team = cfg["tracker"]["team"]
+    for name, path in (cfg.get("repos") or {}).items():
+        repo_dir = os.path.expanduser(path)
+        try:  # one broken repo must not stop the others
+            rc, out = run(["gh", "pr", "list", "--state", "merged", "--search", f"merged:>={since}", "--limit", "30",
+                           "--json", "number,title,body,headRefName,mergeCommit,url,files"], repo_dir)
+            if rc:
+                raise RuntimeError(out[-300:])
+            prs = json.loads(out or "[]")
+        except Exception as e:
+            log(f"apply-sql: {name}: can't list merged PRs: {e!r}")
+            continue
+        for pr in prs:
+            sha = (pr.get("mergeCommit") or {}).get("oid")
+            for f in pr.get("files") or []:
+                key = f"{name}#{pr['number']}:{f['path']}"
+                if not f["path"].endswith(".sql") or key in done or not sha:
+                    continue
+                try:
+                    apply_one(cfg, conf, pr, f["path"], sha, key, repo_dir, team, done, dry, run, save)
+                except Exception as e:
+                    log(f"apply-sql: {key}: {e!r}")
+
+
+def apply_one(cfg, conf, pr, path, sha, key, repo_dir, team, done, dry, run, save):
+    run(["git", "fetch", "-q", "origin"], repo_dir)
+    rc, sql = run(["git", "show", f"{sha}:{path}"], repo_dir)
+    if rc or not sql.lstrip().lower().startswith("-- apply"):
+        done[key] = "not marked -- apply" if not rc else "not in the merge (deleted?)"
+        return
+    found = re.search(rf"\b{team}-\d+\b", f"{pr['headRefName']} {pr['title']} {pr.get('body') or ''}", re.I)
+    issue = found.group(0).upper() if found else None
+    if dry:
+        return log(f"DRY RUN would apply {key} ({issue or 'no issue'})")
+    done[key] = "applying"
+    save()  # marked before it runs: a crash mid-apply never re-applies
+    LOGS.mkdir(parents=True, exist_ok=True)
+    tmp = LOGS / ("apply-" + re.sub(r"[^\w.-]", "_", key))
+    tmp.write_text(sql)
+    cmd = [os.path.expanduser(conf["command"]), str(tmp), "--source", f"{pr['url']}#{path}", "--once"]
+    rc, out = run(cmd + (["--issue", issue] if issue else []), None)
+    done[key] = "applied" if rc == 0 else "failed"
+    log(f"apply-sql: {key}: {done[key]}")
+    text = (f"[Flow] {'Applied' if rc == 0 else 'Did NOT apply'} `{path}` after the merge, through apply-sql:\n"
+            f"```\n{out[-1500:]}\n```")
+    run(["gh", "pr", "comment", str(pr["number"]), "--body", text], repo_dir)
+    if issue:
+        linear_comment(cfg, issue, text)
+    if rc:
+        notify(f"SQL from a merged PR was not applied ({pr['url']}, {path}): {out.splitlines()[-1] if out else ''}")
+
+
 def workspace(issue, repo_dir):
     ws = FLOW / "workspaces" / issue["identifier"]
     if not ws.exists():
@@ -259,6 +335,30 @@ def main():
         got = buildable([todo, {"identifier": "D", "status": "Done", "labels": ["agent"]},
                          {"identifier": "N", "status": "Todo", "labels": ["Bug"]}], ["Todo"], "agent")
         assert got == [todo], got
+        # merged PR with an `-- apply` file: apply-sql runs once, never twice; unmarked SQL is never applied
+        calls, saved = [], []
+        pr = {"number": 7, "title": "Fix bookings (CXJ-12)", "body": "", "headRefName": "fix", "url": "https://x/pull/7",
+              "mergeCommit": {"oid": "abc"}, "files": [{"path": "a.sql"}, {"path": "b.sql"}, {"path": "x.py"}]}
+        def fake(cmd, cwd=None):
+            calls.append(cmd)
+            if cmd[:3] == ["gh", "pr", "list"]:
+                return 0, json.dumps([pr])
+            if cmd[:2] == ["git", "show"]:
+                return 0, "-- apply\nupdate t set a = 1" if cmd[2].endswith("a.sql") else "update t set a = 2"
+            return 0, "applied 1"
+        cfg = {"apply_sql": {"command": "apply-sql"}, "repos": {"r": "/tmp"}, "tracker": {"team": "CXJ"},
+               "models": {"dispatcher": "haiku"}, "tools": {"linear": "mcp__linear"}}
+        st = {}
+        global linear_comment
+        real, linear_comment = linear_comment, lambda *a: calls.append(["linear", *a[1:]])
+        for _ in range(2):
+            apply_merged(cfg, st, False, fake, save=lambda: saved.append(dict(st["applied"])))
+        linear_comment = real
+        applies = [c for c in calls if c[0] == "apply-sql"]
+        assert len(applies) == 1 and "--once" in applies[0] and applies[0][-2:] == ["--issue", "CXJ-12"], applies
+        assert saved and saved[0]["r#7:a.sql"] == "applying", saved  # marked before apply-sql ran
+        assert st["applied"] == {"r#7:a.sql": "applied", "r#7:b.sql": "not marked -- apply"}, st
+        assert sum(c[:3] == ["gh", "pr", "comment"] for c in calls) == 1 and ["linear", "CXJ-12"] == [c[:2] for c in calls if c[0] == "linear"][0]
         return print("ok")
     global DRY
     dry = DRY = "--dry-run" in sys.argv
@@ -276,6 +376,7 @@ def main():
         state = json.loads(STATE.read_text()) if STATE.exists() else {"running": {}, "retries": {}}
         try:  # save even when the dispatcher fails, or reconcile/gate_results ping the same thing again next tick
             reconcile(cfg, state)
+            apply_merged(cfg, state, dry)
             gate_results(state)
             dispatch(cfg, body, state, dry)
         finally:
