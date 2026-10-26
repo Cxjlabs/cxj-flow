@@ -51,7 +51,7 @@ flowchart TD
 | You | Where | What happens (within 5 minutes) |
 |---|---|---|
 | Brain dump | Todoist Inbox | The sorter files it in Linear, or leaves it for you if it's an action |
-| Add the label `plan` | on a **project** (or a single small issue) | The planner checks it isn't already built, then writes the plan and up to 8 issues into the project. Nothing is built yet |
+| Add the label `plan` | on a **project** (or a single small issue) | The planner checks it isn't already built, then writes the plan into the project, with one issue per coding session (as many as the plan needs). Nothing is built yet |
 | Add the label `approved` | on that project | Its issues are queued (label `agent`, Todo), and builders pick them up one issue each |
 | Merge, or add the label `go` | on a PR / an In Review issue | The code shipper merges and closes it. Read the clash check comment first: it tells you whether anything else in flight overlaps |
 | Answer | an issue titled "You: …" or labelled `Decision` | Those are left for a person. Anything blocked by them waits |
