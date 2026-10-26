@@ -372,6 +372,27 @@ def sorter():
     assert runner.sorter_due(CFG, {"last_triage": now}, inbox=lambda c: tasks) is False  # at most every triage_every_minutes
 
 
+def reports():
+    """the reports sorter starts only when a report is new, and a report it already had is never rerun"""
+    st, started = {"reports_seen": ["CXJ-1"]}, []
+    assert runner.reports_due(CFG, st, read=lambda c: ["CXJ-1"]) == []  # left labelled, unchanged: no model run
+    assert runner.reports_due(CFG, st, read=lambda c: ["CXJ-1", "CXJ-2"]) == ["CXJ-1", "CXJ-2"]
+    cfg = {**CFG, "reports": {"label": "Reported", "repo": "app"}}
+    real = linear.reported, runner.agents.spawn, runner.sh
+    linear.reported = lambda c: ["CXJ-1", "CXJ-2"]
+    runner.agents.spawn = lambda cfg, name, ids, state, alive: started.append((name, ids)) or 42
+    runner.sh = lambda cmd, cwd=None: started.append(cmd[3:]) or (0, "")
+    try:
+        runner.gates(cfg, {"plan": []}, st, dry=False)
+        runner.gates(cfg, {"plan": []}, st, dry=False)
+    finally:
+        linear.reported, runner.agents.spawn, runner.sh = real
+    # the app's code is pulled first, the sorter starts once, and the second tick (nothing new) starts nothing
+    assert started == [["pull", "-q", "--ff-only"], ("reports", ["CXJ-1", "CXJ-2"])], started
+    assert st["reports_seen"] == ["CXJ-1", "CXJ-2"], st
+    assert "/tmp" in runner.agents.prompts(cfg)["reports"]  # it is told where the app's code is
+
+
 def daily():
     d = {"shipped": {"nodes": [{"identifier": "CXJ-1", "title": "Fix", "project": {"name": "P"}}]},
          "projects": {"nodes": [{"name": "P", "progress": 0.5, "status": {"name": "Planned"}, "description": "x\n[Planner] plan",
@@ -496,7 +517,7 @@ def run():
     runner.log = lambda msg: None  # the fakes' errors are expected; keep runner.log clean
     try:
         for test in (golden, apply_once, isolation, linear_auth, clash, clash_false_alarm, clash_pings, shipper, prune, sorter,
-                     daily, janitor, finish):
+                     reports, daily, janitor, finish):
             test()
     finally:
         runner.log = real_log

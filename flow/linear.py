@@ -180,6 +180,17 @@ FINISHED = """query($team: String!, $shut: [String!]) {
 }"""
 
 
+REPORTED = """query($team: String!, $label: String!) {
+  issues(first: 100, filter: {team: {key: {eq: $team}}, state: {type: {nin: ["completed", "canceled"]}}, labels: {some: {name: {eq: $label}}}}) {
+    pageInfo { hasNextPage } nodes { identifier } } }"""
+
+
+def reported(cfg):
+    """Open issues with the `reports.label` label: reports from an app the reports sorter hasn't judged yet."""
+    d = gql(REPORTED, team=cfg["tracker"]["team"], label=cfg["reports"]["label"])
+    return [i["identifier"] for i in page(d, "issues")]
+
+
 def finished(cfg):
     """Open projects that have issues, none of them still open. A project with no issues yet is never finished."""
     d = gql(FINISHED, team=cfg["tracker"]["team"], shut=cfg["tracker"]["terminal_states"])
