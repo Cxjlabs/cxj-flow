@@ -491,9 +491,19 @@ def sorter_due(cfg, state, inbox=todoist_inbox):
     return tasks is None or bool(unsorted(tasks, cfg["todoist"]["done_label"]))
 
 
+def reports_due(cfg, state, read=None):
+    """Reports to judge, only when one is new: a report the sorter left labelled is never rerun on unchanged input."""
+    ids = (read or linear.reported)(cfg)
+    return ids if set(ids) - set(state.get("reports_seen", [])) else []
+
+
 def gates(cfg, found, state, dry):
-    """Gate agents (agents.py): plan on `plan`/`approved`, the Todoist sorter when the Inbox has something new."""
+    """Gate agents (agents.py): plan on `plan`/`approved`, the Todoist sorter when the Inbox has something new, the
+    reports sorter when an app report is new."""
     todo = {"plan": found["plan"]}
+    if cfg.get("reports"):
+        with isolated(state, "reports", "read"):
+            todo["reports"] = reports_due(cfg, state)
     if cfg["tools"].get("todoist"):
         with isolated(state, "sorter", "inbox"):
             if sorter_due(cfg, state):
@@ -509,6 +519,8 @@ def gates(cfg, found, state, dry):
         with isolated(state, f"{name} agent", ", ".join(ids)):
             if (pid := agents.spawn(cfg, name, ids, state, alive)):
                 log(f"{name} agent: started pid {pid} for {', '.join(ids)}")
+                if name == "reports":
+                    state["reports_seen"] = sorted(set(state.get("reports_seen", [])) | set(ids))
 
 
 def workspace(issue, repo_dir):

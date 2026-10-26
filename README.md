@@ -39,6 +39,7 @@ flowchart TD
 | Role | Code or AI | Runs | Does | Never does |
 |---|---|---|---|---|
 | **Sorter** | AI (`flow/agents.py`) | When the Todoist Inbox has an unsorted task | Files each brain dump: an action stays in Todoist, an idea or a build request becomes a Linear issue, and a big request becomes a project | Complete or delete your Todoist tasks, add build labels |
+| **Reports sorter** | AI (`flow/agents.py`), only when `reports:` is set | When a new issue has the `reports.label` label (a report from inside your app) | Reads the app's code and judges it: a fix (labelled `Bug`/`Feature` + `Triage`, waits for your `plan`), training (a "You:" task with the reply to send) or not a bug (canceled, with why and the reply) | Change code, add build labels |
 | **Planner** | AI | When you label a project (or issue) `plan` or `approved` | Writes Goal, Done when, Repo and steps into the project, and creates its issues. On `approved` it queues them for builders | Build anything |
 | **Builder** | AI (Claude Code, one per issue) | Issues labelled `agent` in Todo | Works in its own git worktree on the issue's branch, runs the repo's checks, opens a PR, moves the issue to In Review, asks one question if blocked | Merge, push to main, touch repos in `skip_repos` |
 | **Shipper** | Code (`flow/runner.py`) | Issues In Review labelled `go` | Merges the PR when its checks pass and there are no conflicts, re-points stacked PRs, closes the issue | Merge a failing or conflicting PR |
@@ -131,6 +132,7 @@ The YAML front matter is the config, and the body is the builder's instructions.
 | `tracker`, `labels` | Your Linear team, states and the label names Flow uses |
 | `repos`, `skip_repos` | GitHub repo → local checkout, and repos agents must never build or merge in |
 | `todoist.triage_every_minutes` | The most often the sorter may run (it still runs only when there's something new) |
+| `reports` | Label your app's reports arrive with, and which `repos` key holds the app's code (off when unset) |
 | `digest.time` | When the daily message goes out |
 | `models` | Which Claude model each AI role uses |
 | `janitor` | `off` (default) or `on`. Switch on only after its eval passes |
