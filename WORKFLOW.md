@@ -28,7 +28,8 @@ todoist:
   triage_every_minutes: 15         # the sorter runs at most this often, and only when the Inbox has an unsorted task
 # reports:                         # issues people report from inside an app, copied into Linear with this label by your
 #   label: Reported                # own automation; the reports sorter judges each: fix / training / not a bug
-#   repo: my-app                   # a key of `repos`: the app's code, read-only, to judge with
+#   repo: my-app                   # a key of `repos`: the app's code, read-only, to judge with (pulled first, so
+                                   # point it at a clone of your own on main)
 digest:
   time: "07:00"                    # local time of the one daily view (sent through notify.sh)
 models:

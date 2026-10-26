@@ -504,6 +504,8 @@ def gates(cfg, found, state, dry):
     if cfg.get("reports"):
         with isolated(state, "reports", "read"):
             todo["reports"] = reports_due(cfg, state)
+            if todo["reports"] and not dry:  # judge against today's code, not a stale checkout
+                sh(["git", "-C", os.path.expanduser(cfg["repos"][cfg["reports"]["repo"]]), "pull", "-q", "--ff-only"])
     if cfg["tools"].get("todoist"):
         with isolated(state, "sorter", "inbox"):
             if sorter_due(cfg, state):

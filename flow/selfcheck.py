@@ -378,15 +378,18 @@ def reports():
     assert runner.reports_due(CFG, st, read=lambda c: ["CXJ-1"]) == []  # left labelled, unchanged: no model run
     assert runner.reports_due(CFG, st, read=lambda c: ["CXJ-1", "CXJ-2"]) == ["CXJ-1", "CXJ-2"]
     cfg = {**CFG, "reports": {"label": "Reported", "repo": "app"}}
-    real = linear.reported, runner.agents.spawn
+    real = linear.reported, runner.agents.spawn, runner.sh
     linear.reported = lambda c: ["CXJ-1", "CXJ-2"]
     runner.agents.spawn = lambda cfg, name, ids, state, alive: started.append((name, ids)) or 42
+    runner.sh = lambda cmd, cwd=None: started.append(cmd[3:]) or (0, "")
     try:
         runner.gates(cfg, {"plan": []}, st, dry=False)
         runner.gates(cfg, {"plan": []}, st, dry=False)
     finally:
-        linear.reported, runner.agents.spawn = real
-    assert started == [("reports", ["CXJ-1", "CXJ-2"])] and st["reports_seen"] == ["CXJ-1", "CXJ-2"], (started, st)
+        linear.reported, runner.agents.spawn, runner.sh = real
+    # the app's code is pulled first, the sorter starts once, and the second tick (nothing new) starts nothing
+    assert started == [["pull", "-q", "--ff-only"], ("reports", ["CXJ-1", "CXJ-2"])], started
+    assert st["reports_seen"] == ["CXJ-1", "CXJ-2"], st
     assert "/tmp" in runner.agents.prompts(cfg)["reports"]  # it is told where the app's code is
 
 
