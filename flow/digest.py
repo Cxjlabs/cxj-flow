@@ -65,6 +65,7 @@ def build(cfg, state, d, now=None, sql=None):
     jan = state.get("janitor") or {}
     section("Board tidy-ups waiting for your yes (janitor; do them in Linear, or tell a session)", jan.get("proposals"))
     section("Janitor moved (last run, each with a [Janitor] comment saying why)", jan.get("made"))
+    section("Janitor marked these projects Completed (last run)", jan.get("completed"))
     clash = sorted(state.get("clash", {}).values(), key=lambda c: not c.get("sig"))
     section("Open PRs (clash check)", [("⚠ " if c.get("sig") else "") + c["line"] for c in clash if c.get("line")])
     day_ago, errs = now - 86400, {}

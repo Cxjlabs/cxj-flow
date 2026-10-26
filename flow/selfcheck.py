@@ -451,6 +451,38 @@ def janitor():
     assert [agents.key(a) for a in agents.judge(CFG, b, 1, lambda c, b: [out, acts[3], acts[0]])] == [agents.key(acts[3]), agents.key(acts[0])]
 
 
+
+def finish():
+    """a project is completed only when it has issues and none open; off = nothing; never the same project twice"""
+    calls = []
+
+    class Lin:
+        def finished(self, cfg):
+            return [{"id": "p1", "name": "Old fixes"}]
+        def complete_project(self, pid, body): calls.append((pid, body))
+    on, st = {**CFG, "janitor": True}, {}
+    runner.finish({**CFG, "janitor": False}, st, False, Lin())
+    assert calls == [] and st == {}
+    runner.finish(on, st, True, Lin())
+    assert calls == [] and "last_finish" not in st  # dry run writes nothing
+    runner.finish(on, st, False, Lin())
+    assert [c[0] for c in calls] == ["p1"] and "[Janitor] marked Completed" in calls[0][1], calls
+    assert st["janitor"]["completed"] == ['"Old fixes"']
+    st["last_finish"] = 0
+    runner.finish(on, st, False, Lin())
+    assert len(calls) == 1 and st["janitor"]["completed"] == []  # reopened by hand: left alone
+    # linear.finished: a project with no issues, or one still open, is not finished
+    some, none = {"nodes": [{"id": "x"}]}, {"nodes": []}
+    page = {"projects": {"pageInfo": {}, "nodes": [{"id": "a", "name": "A", "any": some, "open": none},
+                                                   {"id": "b", "name": "B", "any": some, "open": some},
+                                                   {"id": "c", "name": "C", "any": none, "open": none}]}}
+    real = linear.gql
+    linear.gql = lambda q, **v: page
+    try:
+        assert linear.finished(CFG) == [{"id": "a", "name": "A"}]
+    finally:
+        linear.gql = real
+
 def run():
     assert labelled([{"identifier": "A", "labels": ["needs-plan"]}, {"identifier": "B", "labels": ["Bug", "plan"]},
                      {"identifier": "C", "labels": []}], ["plan", "approved"]) == ["B"]
@@ -464,7 +496,7 @@ def run():
     runner.log = lambda msg: None  # the fakes' errors are expected; keep runner.log clean
     try:
         for test in (golden, apply_once, isolation, linear_auth, clash, clash_false_alarm, clash_pings, shipper, prune, sorter,
-                     daily, janitor):
+                     daily, janitor, finish):
             test()
     finally:
         runner.log = real_log
