@@ -172,6 +172,25 @@ def relate(a, b):
         success } }""", a=uuid(a), b=uuid(b))
 
 
+
+FINISHED = """query($team: String!, $shut: [String!]) {
+  projects(first: 100, filter: {accessibleTeams: {some: {key: {eq: $team}}}, status: {type: {nin: ["completed", "canceled"]}}}) {
+    pageInfo { hasNextPage } nodes { id name any: issues(first: 1) { nodes { id } }
+      open: issues(first: 1, filter: {state: {name: {nin: $shut}}}) { nodes { id } } } }
+}"""
+
+
+def finished(cfg):
+    """Open projects that have issues, none of them still open. A project with no issues yet is never finished."""
+    d = gql(FINISHED, team=cfg["tracker"]["team"], shut=cfg["tracker"]["terminal_states"])
+    return [{"id": p["id"], "name": p["name"]} for p in page(d, "projects") if p["any"]["nodes"] and not p["open"]["nodes"]]
+
+
+def complete_project(project_id, body):
+    sid = next(s["id"] for s in gql("{ projectStatuses { nodes { id type } } }")["projectStatuses"]["nodes"] if s["type"] == "completed")
+    gql("mutation($id: String!, $s: String!) { projectUpdate(id: $id, input: {statusId: $s}) { success } }", id=project_id, s=sid)
+    gql("mutation($p: String!, $b: String!) { commentCreate(input: {projectId: $p, body: $b}) { success } }", p=project_id, b=PREFIX + body)
+
 # ---------- the daily view ----------
 
 DAY = """query($team: String!, $since: DateTimeOrDuration!, $week: DateTimeOrDuration!) {

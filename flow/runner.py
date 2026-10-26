@@ -644,6 +644,29 @@ def janitor(cfg, state, dry, judge=None, lin=linear):
     j.update(key=key, at=time.time(), made=made, proposals=proposals)
 
 
+
+def finish(cfg, state, dry, lin=linear):
+    """Once a day, with the janitor: an open project whose issues are all closed is marked Completed, with a "[Janitor]"
+    comment saying so. Code decides, no model. Never the same project twice, so reopening one by hand sticks."""
+    if not janitor_on(cfg) or time.time() - state.get("last_finish", 0) < 86400:
+        return
+    j = state.setdefault("janitor", {})
+    done, j["completed"] = j.setdefault("finished", []), []
+    for p in lin.finished(cfg):
+        with isolated(state, "finish", p["name"]):
+            if p["id"] in done:
+                continue
+            if dry:
+                log(f"DRY RUN would mark project \"{p['name']}\" Completed (all its issues are closed)")
+                continue
+            lin.complete_project(p["id"], "[Janitor] marked Completed: all its issues are closed. "
+                                          "Reopen it if more work belongs here; the janitor won't close it again.")
+            done.append(p["id"])
+            j["completed"].append(f"\"{p['name']}\"")
+            log(f"janitor: project \"{p['name']}\" marked Completed")
+    if not dry:
+        state["last_finish"] = time.time()
+
 # ---------- housekeeping ----------
 
 def prune(cfg, state, dry, run=sh, lookup=None):
@@ -705,6 +728,8 @@ def tick(cfg, body, state, dry):
             dispatch(cfg, body, state, found, dry)
         with isolated(state, "janitor"):
             janitor(cfg, state, dry)
+        with isolated(state, "finish"):
+            finish(cfg, state, dry)
     except linear.AuthError as e:
         log(f"can't read Linear: {e}")
         if state.get("linear_ok", True):
