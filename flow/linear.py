@@ -60,9 +60,16 @@ def repo_of(description):
     return m.group(1) if m and m.group(1).lower() != "none" else "none"
 
 
+def project_repo(project):
+    """The repo from the project's full text (`content`); Linear's `description` is only the short summary."""
+    p = project or {}
+    repo = repo_of(p.get("content"))
+    return repo if repo != "none" else repo_of(p.get("description"))
+
+
 WORK = """query($team: String!, $active: [String!], $build: String!, $handoff: String!, $go: String!, $plan: [String!]) {
   issues(first: 100, filter: {team: {key: {eq: $team}}, state: {name: {in: $active}}, labels: {some: {name: {eq: $build}}}}) {
-    pageInfo { hasNextPage } nodes { identifier title branchName state { name } labels { nodes { name } } project { description }
+    pageInfo { hasNextPage } nodes { identifier title branchName state { name } labels { nodes { name } } project { description content }
       inverseRelations { nodes { type issue { identifier state { name } } } } } }
   ship: issues(first: 100, filter: {team: {key: {eq: $team}}, state: {name: {eq: $handoff}}, labels: {some: {name: {eq: $go}}}}) {
     pageInfo { hasNextPage } nodes { identifier state { name } labels { nodes { name } } } }
@@ -85,7 +92,7 @@ def read_work(cfg):
         if skip & set(labels) or i["title"].startswith(tuple(t["excluded_title_prefixes"])):
             continue
         issues.append({"identifier": i["identifier"], "title": i["title"], "branch": i["branchName"],
-                       "status": i["state"]["name"], "labels": labels, "repo": repo_of((i["project"] or {}).get("description")),
+                       "status": i["state"]["name"], "labels": labels, "repo": project_repo(i["project"]),
                        "blocked_by": [{"identifier": r["issue"]["identifier"], "status": r["issue"]["state"]["name"]}
                                       for r in i["inverseRelations"]["nodes"] if r["type"] == "blocks"]})
     item = lambda n, ident: {"identifier": n[ident], "status": (n.get("state") or {}).get("name", ""), "labels": names(n["labels"])}

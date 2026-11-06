@@ -513,6 +513,9 @@ def run():
     assert buildable([todo, {"identifier": "D", "status": "Done", "labels": ["agent"]},
                       {"identifier": "N", "status": "Todo", "labels": ["Bug"]}], ["Todo"], "agent") == [todo]
     assert linear.repo_of("**Repo:** none") == "none" and linear.repo_of("Repo: owner/name\n") == "name"
+    assert linear.project_repo({"description": "Short summary.", "content": "**Repo:** callumabcsales-commits/abc-command-center (production = `main` only)."}) == "abc-command-center"
+    assert linear.project_repo({"description": "Repo: owner/name", "content": None}) == "name"
+    assert linear.project_repo(None) == "none"
     real_log = runner.log
     runner.log = lambda msg: None  # the fakes' errors are expected; keep runner.log clean
     try:
