@@ -28,3 +28,6 @@ Newest at the bottom. Read this at session start.
   guess; a GraphQL filter is a fact. Golden fixture: `flow/fixtures/linear-work*.json`, checked by `--self-check`.
 - One exception used to end a whole tick (155 ticks lost to one KeyError before 15 Oct). Every per-item step now runs in
   `isolated(...)`, and the daily view lists what was skipped, so a skip is never silent.
+- In Linear's API a project's `description` is the short summary; the full text (Goal, Done when, `Repo:`) is `content`.
+  Reading `description` made every task `repo 'none'` from 24 Oct to 6 Nov: zero builds, and the skips showed only in the
+  log. A skip that repeats for days on every tick is an outage, not a skip.
