@@ -659,6 +659,27 @@ def janitor(cfg, state, dry, judge=None, lin=linear):
 
 
 
+def assign_new(cfg, state, dry, lin=linear, now=None):
+    """`tracker.assign_new: me`: every new open issue nobody owns is assigned to you (the Linear key's user), so it shows
+    in My issues. Builder tasks (label `agent`) are left alone. Only issues created since the last run (a week back on the
+    first run), so the old backlog isn't dumped on you and an issue you unassign stays unassigned."""
+    if (cfg["tracker"].get("assign_new") or "") != "me":
+        return
+    now = now or time.time()
+    since = state.get("assign_since") or now - 7 * 86400
+    me, issues = lin.unowned(cfg, time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(since)))
+    for i in issues:
+        if cfg["labels"]["build"] in i["labels"]:
+            continue
+        if dry:
+            log(f"DRY RUN would assign {i['identifier']} to you")
+            continue
+        lin.assign(i["uuid"], me)
+        log(f"assigned {i['identifier']} to you")
+    if not dry:
+        state["assign_since"] = now - 60  # a minute of overlap: an issue saved during the read isn't missed
+
+
 def finish(cfg, state, dry, lin=linear):
     """Once a day, with the janitor: an open project whose issues are all closed is marked Completed, with a "[Janitor]"
     comment saying so. Code decides, no model. Never the same project twice, so reopening one by hand sticks."""
@@ -740,6 +761,8 @@ def tick(cfg, body, state, dry):
             ship(cfg, state, found["ship"], dry)
             gates(cfg, found, state, dry)
             dispatch(cfg, body, state, found, dry)
+        with isolated(state, "assign"):
+            assign_new(cfg, state, dry)
         with isolated(state, "janitor"):
             janitor(cfg, state, dry)
         with isolated(state, "finish"):

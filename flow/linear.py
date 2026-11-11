@@ -180,6 +180,24 @@ def relate(a, b):
 
 
 
+UNOWNED = """query($team: String!, $since: DateTimeOrDuration!) {
+  viewer { id }
+  issues(first: 100, filter: {team: {key: {eq: $team}}, assignee: {null: true}, createdAt: {gt: $since},
+         state: {type: {nin: ["completed", "canceled"]}}}) {
+    pageInfo { hasNextPage } nodes { id identifier labels { nodes { name } } } } }"""
+
+
+def unowned(cfg, since):
+    """(your user id, open issues created after `since` (ISO time) with no assignee) — `since` keeps old backlog out."""
+    d = gql(UNOWNED, team=cfg["tracker"]["team"], since=since)
+    return d["viewer"]["id"], [{"uuid": i["id"], "identifier": i["identifier"], "labels": names(i["labels"])}
+                               for i in page(d, "issues")]
+
+
+def assign(uuid, user):
+    gql("mutation($id: String!, $u: String!) { issueUpdate(id: $id, input: {assigneeId: $u}) { success } }", id=uuid, u=user)
+
+
 FINISHED = """query($team: String!, $shut: [String!]) {
   projects(first: 100, filter: {accessibleTeams: {some: {key: {eq: $team}}}, status: {type: {nin: ["completed", "canceled"]}}}) {
     pageInfo { hasNextPage } nodes { id name any: issues(first: 1) { nodes { id } }

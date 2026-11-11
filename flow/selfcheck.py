@@ -504,6 +504,29 @@ def finish():
     finally:
         linear.gql = real
 
+def assign_new():
+    """new unowned issues go to you, builder tasks don't; off = nothing; a week back first, then only since the last run"""
+    calls, asked = [], []
+
+    class Lin:
+        def unowned(self, cfg, since):
+            asked.append(since)
+            return "me-id", [{"uuid": "u1", "identifier": "CXJ-1", "labels": ["Triage", "Bug"]},
+                             {"uuid": "u2", "identifier": "CXJ-2", "labels": ["agent"]}]
+        def assign(self, uuid, user): calls.append((uuid, user))
+    on = {**CFG, "tracker": {**CFG["tracker"], "assign_new": "me"}}
+    st, now = {}, 1_800_000_000
+    runner.assign_new(CFG, st, False, Lin(), now)
+    assert calls == [] and asked == [] and st == {}
+    runner.assign_new(on, st, True, Lin(), now)
+    assert calls == [] and "assign_since" not in st  # dry run writes nothing
+    runner.assign_new(on, st, False, Lin(), now)
+    assert calls == [("u1", "me-id")], calls
+    assert asked[-1] == time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now - 7 * 86400)) and st["assign_since"] == now - 60
+    runner.assign_new(on, st, False, Lin(), now + 300)
+    assert asked[-1] == time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now - 60))
+
+
 def run():
     assert labelled([{"identifier": "A", "labels": ["needs-plan"]}, {"identifier": "B", "labels": ["Bug", "plan"]},
                      {"identifier": "C", "labels": []}], ["plan", "approved"]) == ["B"]
@@ -520,7 +543,7 @@ def run():
     runner.log = lambda msg: None  # the fakes' errors are expected; keep runner.log clean
     try:
         for test in (golden, apply_once, isolation, linear_auth, clash, clash_false_alarm, clash_pings, shipper, prune, sorter,
-                     reports, daily, janitor, finish):
+                     reports, daily, janitor, finish, assign_new):
             test()
     finally:
         runner.log = real_log
