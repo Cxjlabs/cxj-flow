@@ -9,6 +9,7 @@ tracker:
   terminal_states: [Done, Canceled, Duplicate]
   excluded_title_prefixes: ["You:"]   # tasks only a person can do
   comment_prefix: ""               # put in front of every Linear comment Flow writes, e.g. "[Work Mac] "
+  assign_new: ""                   # "me" = every new open issue nobody owns is assigned to you (builder tasks excepted)
 labels:                            # Linear labels CXJ Flow uses (setup creates them)
   build: agent                     # approved for an agent to build
   plan: plan                       # you: "plan it" (on a project, or on a single issue)
