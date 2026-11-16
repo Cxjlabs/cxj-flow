@@ -539,6 +539,10 @@ def run():
     assert linear.project_repo({"description": "Short summary.", "content": "**Repo:** callumabcsales-commits/abc-command-center (production = `main` only)."}) == "abc-command-center"
     assert linear.project_repo({"description": "Repo: owner/name", "content": None}) == "name"
     assert linear.project_repo(None) == "none"
+    assert linear.repo_of("**Repo:** `callumabcsales-commits/abc-command-center` (numbers)") == "abc-command-center"
+    assert linear.repo_of("## Repo\n\n* `owner/a`\n* `owner/b`") == "none"  # a list is not a Repo: line
+    assert linear.issue_repo({"description": "**Repo:** owner/portal", "project": {"content": "Repo: owner/other"}}) == "portal"
+    assert linear.issue_repo({"description": "No repo here.", "project": {"content": "Repo: owner/other"}}) == "other"
     real_log = runner.log
     runner.log = lambda msg: None  # the fakes' errors are expected; keep runner.log clean
     try:

@@ -42,7 +42,7 @@ B) Issue has the label `{lb['plan']}` and no "[Planner] plan" comment yet ({owne
    3. Comment "[Planner] plan" with: Goal (one line), Who it affects, Done when (observable checks), Repo, Steps.
    4. Create one sub-issue per session-sized step, as many as the plan needs (parent = this issue, same project; if it has no project, pick the project whose description has the
       right "Repo:" line and set it on the parent too). Each: state Backlog, NO `{lb['build']}` label, a plain-English title,
-      description = what to change + done-when checks, ending with the line "[Planner]". Add blocked-by relations where one needs
+      description = "**Repo:** owner/name" line first, then what to change + done-when checks, ending with the line "[Planner]". Add blocked-by relations where one needs
       another. Each must be small enough for one PR.
    5. Remove `{lb['plan']}`. Keep the parent's `{lb['idea']}`/`{lb['triage']}` label so the parent itself is never built.
 
@@ -57,14 +57,15 @@ P2) Project has the project label `{lb['plan']}` and its description has no "[Pl
       read-only). If it is: comment on the project "[Planner] already built: <evidence>", take `{lb['plan']}` off, stop.
    2. Weigh it against the current priorities in COMPANY.md: 🔥 burning / big / small / tiny, and why, in one line.
    3. The project is the home of the plan. Rewrite its description as: **Goal** (one or two lines), **Done when** (observable
-      checks), **Repo:** owner/name (or "none"), then "## Original ask" with {owner}'s own words kept exactly, "## What we know"
+      checks), **Repo:** owner/name (exactly one line in that form; several repos: one line each, or "none"), then "## Original ask" with {owner}'s own words kept exactly, "## What we know"
       (only facts you checked, with the weight line), "## Plan" (numbered steps), and a last line "[Planner] plan".
       Anything longer than a screen goes in a Linear document attached to the project, linked from the description.
       Set the project status to Planned.
    4. Create one issue per session-sized step, as many as the plan needs (no cap: one issue = one coding session = one
       PR; if a step would take more than one session, split it). Issues go directly in the project: NO parent issue and no sub-issues, so the project board and its progress bar
       show everything. Each: state Backlog, NO `{lb['build']}` label, a plain-English title, description = what to change +
-      done-when checks, ending with the line "[Planner]". Cover every build step in the project and its documents (build
+      done-when checks, ending with the line "[Planner]". Start every build issue's description with a line
+      "**Repo:** owner/name" (the one repo that issue changes); the builder skips an issue it can't place. Cover every build step in the project and its documents (build
       specs, rules, clocks, guardrails), not only the headline ones. Add blocked-by relations where one needs another. A step only a person can do gets a title starting "{cfg['tracker']['excluded_title_prefixes'][0]}";
       a choice {owner} must make first gets the `{lb['decision']}` label and blocks what depends on it.
    5. Take `{lb['plan']}` off the project and comment on it: "[Planner] plan written — N tasks. Add the project label

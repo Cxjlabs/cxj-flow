@@ -569,6 +569,10 @@ def dispatch(cfg, body, state, found, dry):
             repos = cfg.get("repos") or {}
             if issue["repo"] not in repos or issue["repo"] in cfg.get("skip_repos", []):
                 log(f"{ident}: skipped (repo '{issue['repo']}' not in WORKFLOW.md repos, or in skip_repos)")
+                pinged = state.setdefault("no_repo", [])
+                if issue["repo"] == "none" and ident not in pinged:  # once per issue, so a missing Repo: line is never silent
+                    notify(f"{ident} has no Repo: line (issue or project), so Flow won't build it. Add `Repo: owner/name`.")
+                    pinged.append(ident)
                 continue
             attempt = (retry["attempt"] + 1) if retry else 1
             if dry:

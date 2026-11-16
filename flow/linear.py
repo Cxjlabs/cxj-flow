@@ -55,9 +55,15 @@ def page(data, field):
 
 
 def repo_of(description):
-    """`Repo: owner/name` (or **Repo:** [owner/name](url)) in a project description -> 'name', else 'none'."""
-    m = re.search(r"Repo:\**\s*\[?(?:[\w.-]+/)?([\w.-]+)", description or "")
+    """`Repo: owner/name` (or **Repo:** [owner/name](url) / `owner/name`) in a description -> 'name', else 'none'."""
+    m = re.search(r"Repo:\**\s*[\[`]?(?:[\w.-]+/)?([\w.-]+)", description or "")
     return m.group(1) if m and m.group(1).lower() != "none" else "none"
+
+
+def issue_repo(issue):
+    """The issue's own `Repo:` line wins (a project can span repos), else the project's. Never guessed."""
+    repo = repo_of(issue.get("description"))
+    return repo if repo != "none" else project_repo(issue.get("project"))
 
 
 def project_repo(project):
@@ -69,7 +75,7 @@ def project_repo(project):
 
 WORK = """query($team: String!, $active: [String!], $build: String!, $handoff: String!, $go: String!, $plan: [String!]) {
   issues(first: 100, filter: {team: {key: {eq: $team}}, state: {name: {in: $active}}, labels: {some: {name: {eq: $build}}}}) {
-    pageInfo { hasNextPage } nodes { identifier title branchName state { name } labels { nodes { name } } project { description content }
+    pageInfo { hasNextPage } nodes { identifier title description branchName state { name } labels { nodes { name } } project { description content }
       inverseRelations { nodes { type issue { identifier state { name } } } } } }
   ship: issues(first: 100, filter: {team: {key: {eq: $team}}, state: {name: {eq: $handoff}}, labels: {some: {name: {eq: $go}}}}) {
     pageInfo { hasNextPage } nodes { identifier state { name } labels { nodes { name } } } }
@@ -92,7 +98,7 @@ def read_work(cfg):
         if skip & set(labels) or i["title"].startswith(tuple(t["excluded_title_prefixes"])):
             continue
         issues.append({"identifier": i["identifier"], "title": i["title"], "branch": i["branchName"],
-                       "status": i["state"]["name"], "labels": labels, "repo": project_repo(i["project"]),
+                       "status": i["state"]["name"], "labels": labels, "repo": issue_repo(i),
                        "blocked_by": [{"identifier": r["issue"]["identifier"], "status": r["issue"]["state"]["name"]}
                                       for r in i["inverseRelations"]["nodes"] if r["type"] == "blocks"]})
     item = lambda n, ident: {"identifier": n[ident], "status": (n.get("state") or {}).get("name", ""), "labels": names(n["labels"])}
