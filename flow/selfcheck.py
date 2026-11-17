@@ -66,6 +66,34 @@ def apply_once():
     assert sum(c[:3] == ["gh", "pr", "comment"] for c in calls) == 1 and [c[:2] for c in calls if c[0] == "linear"] == [["linear", "CXJ-12"]]
 
 
+def handoff_pings():
+    """a builder handing off pings once with the title and the PR link (or the question); never twice"""
+    ev = lambda t: json.dumps({"type": "assistant", "message": {"content": [{"type": "tool_use", "name": "save_comment",
+                                                                              "input": {"body": t}}]}})
+    review = "\n".join([json.dumps({"type": "system", "subtype": "init"}),
+                        ev("Plan: when done I'll comment `[Flow] ready for review: <PR url>`"),
+                        ev("[Flow] ready for review: https://github.com/o/app/pull/12\nAdds the \"students\" page.")])
+    assert runner.handoff(review) == ("review", "https://github.com/o/app/pull/12"), runner.handoff(review)
+    blocked_log = ev('[Flow] blocked: Which "paid-through" date wins?\nMore detail below.')
+    assert runner.handoff(blocked_log) == ("blocked", 'Which "paid-through" date wins?'), runner.handoff(blocked_log)
+    assert runner.handoff(ev("I will comment [Flow] ready for review: <PR url> later")) is None
+    tmp = Path(tempfile.mkdtemp())
+    logf = tmp / "b.log"
+    logf.write_text(review)
+    pings, real = [], (runner.notify, runner.alive)
+    runner.notify = lambda msg, title=None: pings.append((title, msg))
+    runner.alive = lambda pid: False
+    try:
+        st = {"running": {"CXJ-9": {"pid": 1, "log": str(logf), "attempt": 1, "started": 0, "title": "Students page"}}, "retries": {}}
+        runner.reconcile(CFG, st)
+        runner.ping_handoff(st, "CXJ-9", "Students page", review)  # the same hand-off seen again: no second ping
+        assert pings == [("Flow: ready for review · CXJ-9", "CXJ-9 Students page\nhttps://github.com/o/app/pull/12")], pings
+        runner.ping_handoff(st, "CXJ-10", "Dates", blocked_log)
+        assert len(pings) == 2 and pings[1][0] == "Flow: blocked · CXJ-10" and "paid-through" in pings[1][1], pings
+    finally:
+        runner.notify, runner.alive = real
+
+
 def isolation():
     """a failing item is logged, listed for the daily view and skipped; the rest of the tick still runs"""
     tmp = Path(tempfile.mkdtemp())
@@ -546,7 +574,7 @@ def run():
     real_log = runner.log
     runner.log = lambda msg: None  # the fakes' errors are expected; keep runner.log clean
     try:
-        for test in (golden, apply_once, isolation, linear_auth, clash, clash_false_alarm, clash_pings, shipper, prune, sorter,
+        for test in (golden, apply_once, isolation, handoff_pings, linear_auth, clash, clash_false_alarm, clash_pings, shipper, prune, sorter,
                      reports, daily, janitor, finish, assign_new):
             test()
     finally:

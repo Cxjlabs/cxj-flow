@@ -76,14 +76,69 @@ def blocked(issue, terminal):
 
 def notify(msg, title=None):
     """Ping the owner: runs $FLOW_HOME/notify.sh "<message>" ["<title>"] if you made one. Never raises.
-    Only clash, outage and failed-apply pings and the one daily view use it; everything else waits for the daily view."""
+    Used by the daily view and a few pings: a builder handing off (ready for review / blocked), a new clash, an outage,
+    a failed SQL apply. Everything else waits for the daily view.
+    Returns True only if notify.sh ran and exited 0; a missing or failing notify.sh is logged, never silent."""
     hook = FLOW / "notify.sh"
-    if DRY or not hook.exists():
-        return
+    if DRY:
+        return False
+    if not os.access(hook, os.X_OK):
+        log(f"notify NOT sent: no executable {hook} ({title or msg[:60]!r})")
+        return False
     try:
-        subprocess.run([str(hook), msg] + ([title] if title else []), capture_output=True, timeout=30)
+        out = subprocess.run([str(hook), msg] + ([title] if title else []), capture_output=True, text=True, timeout=30)
     except Exception as e:
         log(f"notify failed: {e!r}")
+        return False
+    if out.returncode:
+        log(f"notify failed: {hook} exited {out.returncode}: {(out.stderr or out.stdout).strip()[:200]}")
+    return out.returncode == 0
+
+
+HANDOFF = re.compile(r"\[Flow\] (ready for review|blocked):\s*([^\n]*)")
+
+
+def handoff(text):
+    """The builder's last hand-off in its log: ("review", PR url) or ("blocked", question), else None. The log is
+    stream-json, so each line is decoded first and the comment is found in the strings it holds (escapes undone)."""
+    found = None
+    def walk(v):
+        nonlocal found
+        if isinstance(v, str):
+            for m in HANDOFF.finditer(v):
+                if m.group(1) == "blocked":
+                    found = ("blocked", m.group(2).strip())
+                elif (pr := re.search(r"https://github\.com/[^\s\"')>\]]+/pull/\d+", m.group(2))):
+                    found = ("review", pr.group(0))
+        elif isinstance(v, dict):
+            for x in v.values():
+                walk(x)
+        elif isinstance(v, list):
+            for x in v:
+                walk(x)
+    for line in text.splitlines():
+        try:
+            walk(json.loads(line))
+        except ValueError:
+            walk(line)
+    return found
+
+
+def ping_handoff(state, ident, title, text):
+    """One ping per hand-off, with the issue title and the PR link or the question. Never twice for the same event."""
+    h = handoff(text)
+    if not h:
+        return
+    key = f"{ident}|{h[0]}|{h[1]}"
+    sent = state.setdefault("handoff_pinged", [])
+    if key in sent:
+        return
+    if h[0] == "review":
+        notify(f"{ident} {title}\n{h[1]}", f"Flow: ready for review · {ident}")
+    else:
+        notify(f"{ident} {title}\nQuestion: {h[1]}\nAnswer in Linear, then move it back to Todo.", f"Flow: blocked · {ident}")
+    sent.append(key)
+    del sent[:-200]
 
 
 def find_work(cfg, running_ids, read=None):
@@ -125,8 +180,9 @@ def reconcile(cfg, state):
             del state["running"][ident]
             text = logf.read_text() if logf.exists() else ""
             if "[Flow] ready for review" in text or "[Flow] blocked" in text:
-                log(f"{ident}: finished (attempt {r['attempt']})")  # the daily view shows what needs a yes
+                log(f"{ident}: finished (attempt {r['attempt']})")
                 state["retries"].pop(ident, None)
+                ping_handoff(state, ident, r.get("title", ""), text)
             elif r["attempt"] >= a["max_retries"]:
                 log(f"{ident}: gave up after {r['attempt']} attempts — needs a person")
                 state["retries"][ident] = {"attempt": r["attempt"], "due": float("inf"), "title": r.get("title", "")}
