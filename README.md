@@ -69,7 +69,9 @@ skipped. It never stops the rest of the tick. An idle tick makes no AI call.
 
 ## What reaches you
 - **One daily message**, through your own `notify.sh` (ntfy, Slack, a desktop alert: anything that takes a message).
-- **Only four kinds of ping in between:** a *new* clash on a PR, Flow losing its Linear connection, a merged PR's SQL
+- **A ping when a builder hands off:** the issue title and PR link when it moves to In Review, or the issue title and
+  its one question when it's blocked. Once per hand-off, never repeated.
+- **Only four other kinds of ping:** a *new* clash on a PR, Flow losing its Linear connection, a merged PR's SQL
   failing to apply, and (with the heartbeat) Flow stopping.
 
 ## Safety model
