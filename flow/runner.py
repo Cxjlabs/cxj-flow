@@ -77,14 +77,22 @@ def blocked(issue, terminal):
 def notify(msg, title=None):
     """Ping the owner: runs $FLOW_HOME/notify.sh "<message>" ["<title>"] if you made one. Never raises.
     Used by the daily view and a few pings: a builder handing off (ready for review / blocked), a new clash, an outage,
-    a failed SQL apply. Everything else waits for the daily view."""
+    a failed SQL apply. Everything else waits for the daily view.
+    Returns True only if notify.sh ran and exited 0; a missing or failing notify.sh is logged, never silent."""
     hook = FLOW / "notify.sh"
-    if DRY or not hook.exists():
-        return
+    if DRY:
+        return False
+    if not os.access(hook, os.X_OK):
+        log(f"notify NOT sent: no executable {hook} ({title or msg[:60]!r})")
+        return False
     try:
-        subprocess.run([str(hook), msg] + ([title] if title else []), capture_output=True, timeout=30)
+        out = subprocess.run([str(hook), msg] + ([title] if title else []), capture_output=True, text=True, timeout=30)
     except Exception as e:
         log(f"notify failed: {e!r}")
+        return False
+    if out.returncode:
+        log(f"notify failed: {hook} exited {out.returncode}: {(out.stderr or out.stdout).strip()[:200]}")
+    return out.returncode == 0
 
 
 HANDOFF = re.compile(r"\[Flow\] (ready for review|blocked):\s*([^\n]*)")

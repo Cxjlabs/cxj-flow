@@ -95,9 +95,9 @@ def main():
         return print(text)
     LOGS.mkdir(exist_ok=True)
     (LOGS / f"daily-{time.strftime('%Y-%m-%d')}.md").write_text(text + "\n")
-    notify(text, "Flow daily")
+    sent = notify(text, "Flow daily")
     with open(LOGS / "digest.log", "a") as f:
-        f.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')} sent ({len(text)} chars)\n")
+        f.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')} {'sent' if sent else 'NOT sent (see runner.log)'} ({len(text)} chars)\n")
     print(text)
 
 
