@@ -12,7 +12,6 @@ Config + builder prompt: `WORKFLOW.md`. Company knowledge: `context/`. Code: `fl
 | Change the daily view | `flow/digest.py` | `python3 flow/digest.py --print` |
 | Change how Linear is read or written | `flow/linear.py` | `python3 flow/runner.py --self-check` |
 | Why something happened | `logs/runner.log`, `logs/<id>-*.log` | — |
-| Past mistakes | `LESSONS.md` — append new ones | — |
 
 ## "Set me up" interview
 When the user says "set me up", or `WORKFLOW.md` has `team: ""`, or `context/COMPANY.md` still has `TODO:`:
