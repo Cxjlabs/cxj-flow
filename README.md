@@ -153,7 +153,6 @@ The YAML front matter is the config, and the body is the builder's instructions.
 | `flow/selfcheck.py` | Tests: `python3 flow/runner.py --self-check` |
 | `evals/janitor/run.py` | Replays the janitor on real cases from your own board: `python3 evals/janitor/run.py` (cases in `$FLOW_HOME/evals/janitor/cases.json`) |
 | `setup.sh` | Checks, labels, dry run, launchd schedule |
-| `LESSONS.md` | Mistakes that shaped the design. Read it before changing the runner |
 
 Logs live in `logs/`: `runner.log` for the timeline, and one file per agent run.
 
